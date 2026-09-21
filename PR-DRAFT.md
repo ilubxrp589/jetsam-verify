@@ -153,10 +153,22 @@ Today a third-party verifier must re-derive the parameters from the canonical
 artifacts, because there is no independently-checkable digest for the packed
 form. That is a **~29 minute** first run in a browser. `load_cached_matrix`
 already restores a packed image in **430 ms**, so a published packed digest
-would turn 29 minutes into about a second **with the trust model unchanged**:
-still only your published hash, still no trust in whoever served the bytes.
+would replace 29 minutes of computation with a download, **with the trust model
+unchanged**: still only your published hash, still no trust in whoever served
+the bytes.
+
+To be fair about the trade rather than overselling it: the packed images are
+171 MB and 742 MB uncompressed against 3.68 MB and 12.42 MB for the canonical
+artifacts, and I have not measured what they compress to. So this swaps a long
+computation for a considerably larger transfer. On a desktop that is plainly the
+better deal; I am less sure it helps a phone.
 
 Smaller asks in the same area:
+- **A chunked or streaming packed-image loader.** This is what would actually
+  make a phone viable. Materialising a 742 MB image whole is why this is
+  desktop-only: the cold run peaks near 4.3 GB and even a cached restore peaks
+  near 3.7 GB, because the image is read out of browser storage and then copied
+  into the wasm heap. Fed in pieces, neither peak would exist.
 - `open_packed` is one atomic call, so a long scan cannot be resumed or report
   progress. The span batching in 0003 could expose a cursor.
 - A documented third-party verifier entry point would help generally.
