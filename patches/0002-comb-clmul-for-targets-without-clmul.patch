@@ -1,0 +1,132 @@
+diff --git a/jetsam_core/src/hardware.rs b/jetsam_core/src/hardware.rs
+index 5bb89a7..f1bba7f 100644
+--- a/jetsam_core/src/hardware.rs
++++ b/jetsam_core/src/hardware.rs
+@@ -593,15 +593,43 @@ mod aarch64_clmul {
+ mod soft_clmul {
+     use super::*;
+ 
++    /// Carry-less 64x64 -> 128 multiply, 4-bit comb (Lopez-Dahab).
++    ///
++    /// Reached on every target that has no carry-less multiply instruction.
++    /// wasm32 has none, not even in SIMD128, so browser verification pays this
++    /// on every GF(2^128) multiply, which dominates the structural scan.
++    ///
++    /// The bit-serial predecessor ran once per set bit of `b` (~32 on average)
++    /// and did a full 128-bit multiply each time; on wasm32 that multiply is
++    /// itself synthesised out of 64-bit halves. This version precomputes
++    /// `a * u` for every 4-bit `u`, then folds `b` one nibble at a time with
++    /// Horner's rule, so every shift is by a compile-time constant and no
++    /// 128-bit multiply is emitted at all.
+     #[inline(always)]
+     pub fn clmul_64x64(a: u64, b: u64) -> u128 {
+-        let mut res = 0u128;
+-        let mut b = b as u128;
+         let a = a as u128;
+-        while b != 0 {
+-            let lsb = b & (!b + 1);
+-            res ^= a * lsb;
+-            b ^= lsb;
++
++        // t[u] = a * u over GF(2)[x], for u in 0..16. Multiplying by x is a
++        // shift, so a*(2u) = (a*u) << 1 and a*(2u+1) = a*(2u) ^ a.
++        let mut t = [0u128; 16];
++        t[1] = a;
++        let mut u = 2usize;
++        while u < 16 {
++            t[u] = t[u >> 1] << 1;
++            t[u + 1] = t[u] ^ a;
++            u += 2;
++        }
++
++        // Horner over the 16 nibbles of `b`, most significant first. The
++        // running value tops out at 127 bits, so `res << 4` cannot overflow.
++        let mut res = 0u128;
++        let mut rest = b;
++        let mut i = 0;
++        while i < 16 {
++            let nibble = (rest >> 60) as usize; // < 16 by construction
++            res = (res << 4) ^ t[nibble];
++            rest <<= 4;
++            i += 1;
+         }
+         res
+     }
+@@ -777,3 +805,77 @@ impl HardwareField for Block128 {
+         Flat(*self).to_tower().inner()
+     }
+ }
++
++#[cfg(test)]
++mod soft_clmul_tests {
++    use super::*;
++
++    /// xorshift64. Deterministic, so a failure is reproducible from the seed.
++    fn stream(seed: u64) -> impl FnMut() -> u64 {
++        let mut s = seed;
++        move || {
++            s ^= s << 13;
++            s ^= s >> 7;
++            s ^= s << 17;
++            s
++        }
++    }
++
++    /// The definition of carry-less multiplication, one bit at a time.
++    fn clmul_reference(a: u64, b: u64) -> u128 {
++        let mut res = 0u128;
++        for i in 0..64 {
++            if (b >> i) & 1 == 1 {
++                res ^= (a as u128) << i;
++            }
++        }
++        res
++    }
++
++    #[test]
++    fn comb_matches_bitwise_reference() {
++        for &(a, b) in &[
++            (0u64, 0u64),
++            (0, u64::MAX),
++            (u64::MAX, 0),
++            (u64::MAX, u64::MAX),
++            (1, 1),
++            (1, u64::MAX),
++            (u64::MAX, 1),
++            (1 << 63, 1 << 63),
++        ] {
++            assert_eq!(
++                soft_clmul::clmul_64x64(a, b),
++                clmul_reference(a, b),
++                "edge case a={a:#x} b={b:#x}"
++            );
++        }
++
++        let mut next = stream(0x243f_6a88_85a3_08d3);
++        for _ in 0..50_000 {
++            let (a, b) = (next(), next());
++            assert_eq!(
++                soft_clmul::clmul_64x64(a, b),
++                clmul_reference(a, b),
++                "random a={a:#x} b={b:#x}"
++            );
++        }
++    }
++
++    /// The whole point: the software path must be indistinguishable from the
++    /// PCLMULQDQ/PMULL path, because a browser runs the software one against
++    /// digests produced by the hardware one.
++    #[test]
++    fn soft_block128_matches_hardware_path() {
++        let mut next = stream(0x9e37_79b9_7f4a_7c15);
++        let mut wide = move || ((next() as u128) << 64) | next() as u128;
++        for _ in 0..50_000 {
++            let (a, b) = (wide(), wide());
++            assert_eq!(
++                soft_clmul::clmul_block128(a, b),
++                clmul_gcm(a, b),
++                "a={a:#x} b={b:#x}"
++            );
++        }
++    }
++}

@@ -1,0 +1,24 @@
+# wasm-bindgen-rayon requires the wasm threads proposal: shared memory plus
+# atomics. std has to be rebuilt with those features, which is why this needs
+# nightly and -Z build-std.
+#
+# Shared memory must declare a maximum up front. The class-1 matrix alone
+# expands to 389 MB, so the default ceiling is far too low.
+[target.wasm32-unknown-unknown]
+rustflags = [
+  "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
+  "-C", "link-arg=--import-memory",
+  "-C", "link-arg=--shared-memory",
+  "-C", "link-arg=--export=__wasm_init_tls",
+  "-C", "link-arg=--export=__tls_size",
+  "-C", "link-arg=--export=__tls_align",
+  "-C", "link-arg=--export=__tls_base",
+  "-C", "link-arg=--max-memory=4294967296",
+  # The recursive Ligerito verifier needs a 64 MiB stack. Natively it gets one
+  # from a dedicated rayon lane; wasm cannot spawn those, so we run the verify
+  # inline (set_budgeted_large_stack_worker) and the stack must come from here.
+  "-C", "link-arg=-zstack-size=67108864",
+]
+
+[unstable]
+build-std = ["panic_abort", "std"]

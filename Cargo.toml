@@ -1,0 +1,70 @@
+[package]
+name = "jetsam-verify"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# The whole verification stack reaches wasm thanks to patch 0001 (libmdbx made
+# optional). jetsam_chain must drop default features or it pulls libmdbx back in.
+[dependencies]
+jetsam-ivc-core  = { path = "jetsam/jetsam_ivc_core" }
+jetsam_recursive = { path = "jetsam/jetsam_recursive" }
+jetsam_core      = { path = "jetsam/jetsam_core" }
+jetsam_chain     = { path = "jetsam/jetsam_chain", default-features = false }
+jetsam_poseidon2b = { path = "jetsam/jetsam_poseidon2b" }
+
+# Native-only: jetsam_miner drags in tokio + libc and cannot target wasm32.
+# The browser path reimplements the small metadata frame decode instead
+# (see `decode_metadata` in src/lib.rs) -- that is the ONLY thing we needed
+# from jetsam_miner.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+jetsam_miner = { path = "jetsam/jetsam_miner" }
+zstd         = "0.13"
+hex          = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom    = { version = "0.2", features = ["js"] }
+wasm-bindgen = "0.2"
+# Real threads in the browser. Needs nightly + build-std + wasm atomics (see
+# .cargo/config.toml) and COOP/COEP headers so SharedArrayBuffer is available.
+wasm-bindgen-rayon = "1.2"
+rayon = "1"
+# panic=abort throws away the message ("RuntimeError: unreachable"); this hook
+# prints the real panic before aborting.
+console_error_panic_hook = "0.1"
+
+[[bin]]
+name = "decode_meta"
+path = "src/bin/decode_meta.rs"
+
+[[bin]]
+name = "load_matrix"
+path = "src/bin/load_matrix.rs"
+
+[[bin]]
+name = "verify_terminal"
+path = "src/bin/verify_terminal.rs"
+
+[[bin]]
+name = "print_pins"
+path = "src/bin/print_pins.rs"
+
+[profile.release]
+opt-level = 3
+lto       = true
+codegen-units = 1
+
+# The upstream source lives at ./jetsam and is its OWN cargo workspace.
+# Without this exclude, cargo absorbs it into this one and workspace inheritance
+# (`version.workspace = true`) fails to resolve.
+[workspace]
+exclude = ["jetsam"]
+
+# wasm-pack 0.14 bundles a binaryen older than wasm-bindgen 0.2.128's externref
+# table emission; its wasm-opt pass caps the table so __wbindgen_init_externref_table
+# fails at load with "failed to grow table by 4". rustc's own opt-level=3 + LTO
+# already does the heavy lifting here.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

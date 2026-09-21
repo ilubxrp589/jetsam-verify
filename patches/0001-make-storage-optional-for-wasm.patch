@@ -1,0 +1,172 @@
+diff --git a/jetsam_chain/Cargo.toml b/jetsam_chain/Cargo.toml
+index 8d56126..3a5a988 100644
+--- a/jetsam_chain/Cargo.toml
++++ b/jetsam_chain/Cargo.toml
+@@ -5,6 +5,11 @@ edition = "2021"
+ license = "Apache-2.0"
+ 
+ [features]
++default = ["storage"]
++# The MDBX-backed store (a C library that cannot target wasm32). Without it the
++# crate still provides consensus params, header hashing and Merkle types --
++# everything needed to VERIFY a chain, in a browser.
++storage = ["dep:libmdbx"]
+ # Test-chain identity: distinct genesis, address HRP, protocol namespace,
+ # ports and data directory. Never enable for a mainnet release.
+ testnet = ["jetsam_poseidon2b/testnet"]
+@@ -17,7 +22,7 @@ jetsam_tx = { path = "../jetsam_tx" }
+ jetsam_fri = { path = "../jetsam_fri" }
+ jetsam_fri_binius = { path = "../jetsam_fri_binius" }
+ rayon = "1.10"
+-libmdbx = "0.6"
++libmdbx = { version = "0.6", optional = true }
+ bincode = "1"
+ serde = { version = "1", features = ["derive"] }
+ 
+diff --git a/jetsam_chain/src/consensus/fork_choice.rs b/jetsam_chain/src/consensus/fork_choice.rs
+index c6a4569..116e225 100644
+--- a/jetsam_chain/src/consensus/fork_choice.rs
++++ b/jetsam_chain/src/consensus/fork_choice.rs
+@@ -16,7 +16,7 @@
+ 
+ use crate::consensus::difficulty::work_gt;
+ use crate::consensus::params::CONSENSUS_FINALITY_DEPTH;
+-use crate::storage::FinalizedCheckpoint;
++use crate::meta::FinalizedCheckpoint;
+ 
+ /// Compare two chain tips by cumulative PoW work.
+ ///
+diff --git a/jetsam_chain/src/lib.rs b/jetsam_chain/src/lib.rs
+index 74b0138..28ff9ce 100644
+--- a/jetsam_chain/src/lib.rs
++++ b/jetsam_chain/src/lib.rs
+@@ -24,10 +24,12 @@ pub mod fri_state;
+ pub mod header_anchor;
+ pub mod history_step;
+ pub mod mempool;
++pub mod meta;
+ pub mod segmented_state;
+ pub mod sparse_merkle;
+ pub mod state;
+ pub mod state_delta;
++#[cfg(feature = "storage")]
+ pub mod storage;
+ pub mod tx_tree;
+ pub mod wire;
+@@ -55,10 +57,13 @@ pub use segmented_state::{
+ // Storage backends
+ // ---------------------------------------------------------------------------
+ 
++// Pure consensus metadata, available with or without the storage backend.
++pub use meta::{ConsensusMeta, FinalizedCheckpoint};
++#[cfg(feature = "storage")]
+ pub use storage::{
+-    reconstruct_historical_exact_state, CanonicalTipBinding, ConsensusMeta, FinalizedCheckpoint,
+-    HistoricalExactStateView, HistoricalStateError, MdbxChainContext, MdbxContextError, MdbxStore,
+-    RamBackend, StateBackend, StoreError, VerifiedReorgSuffix, VerifiedSnapshotBoundary,
++    reconstruct_historical_exact_state, CanonicalTipBinding, HistoricalExactStateView,
++    HistoricalStateError, MdbxChainContext, MdbxContextError, MdbxStore, RamBackend, StateBackend,
++    StoreError, VerifiedReorgSuffix, VerifiedSnapshotBoundary,
+ };
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/jetsam_chain/src/storage/meta.rs b/jetsam_chain/src/meta.rs
+similarity index 100%
+rename from jetsam_chain/src/storage/meta.rs
+rename to jetsam_chain/src/meta.rs
+diff --git a/jetsam_chain/src/storage/mdbx_context.rs b/jetsam_chain/src/storage/mdbx_context.rs
+index 7481d0b..822ec60 100644
+--- a/jetsam_chain/src/storage/mdbx_context.rs
++++ b/jetsam_chain/src/storage/mdbx_context.rs
+@@ -71,8 +71,9 @@ use crate::consensus::{
+ use crate::segmented_state::SegmentedFriState;
+ use crate::state::{ChainState, StreamingSparseRoot};
+ use crate::storage::mdbx_store::{AcceptedBlockCommit, StagedAcceptedBlockCommit};
++use crate::meta::{ConsensusMeta, FinalizedCheckpoint};
+ use crate::storage::{
+-    ConsensusMeta, FinalizedCheckpoint, FinalizedSnapshotStaging, MdbxStore,
++    FinalizedSnapshotStaging, MdbxStore,
+     SnapshotHeaderInstallSource, StoreError, VerifiedSnapshotBoundary,
+ };
+ 
+diff --git a/jetsam_chain/src/storage/mdbx_store.rs b/jetsam_chain/src/storage/mdbx_store.rs
+index fe2224d..858eedd 100644
+--- a/jetsam_chain/src/storage/mdbx_store.rs
++++ b/jetsam_chain/src/storage/mdbx_store.rs
+@@ -33,7 +33,7 @@ use crate::header_anchor::{
+ };
+ use crate::segmented_state::SegmentColumns;
+ use crate::state::{ChainState, StreamingSparseRoot};
+-use crate::storage::meta::ConsensusMeta;
++use crate::meta::ConsensusMeta;
+ use crate::storage::serial::{
+     decode_chain_tip, decode_chain_work, decode_circulating_supply, decode_consensus_meta,
+     decode_header, decode_header_chain_anchor, decode_segment, decode_segment_summary,
+@@ -4178,7 +4178,7 @@ mod tests {
+     use super::*;
+     use crate::fri_state::SlotValue;
+     use crate::state::ChainState;
+-    use crate::storage::FinalizedCheckpoint;
++    use crate::meta::FinalizedCheckpoint;
+     use jetsam_core::Block128;
+     use jetsam_poseidon2b::primitives::Address;
+     use jetsam_tx::{
+diff --git a/jetsam_chain/src/storage/mod.rs b/jetsam_chain/src/storage/mod.rs
+index db5d2ae..30ae6c3 100644
+--- a/jetsam_chain/src/storage/mod.rs
++++ b/jetsam_chain/src/storage/mod.rs
+@@ -17,7 +17,6 @@ pub mod historical_state;
+ pub mod mdbx_context;
+ pub mod mdbx_store;
+ pub mod memory;
+-pub mod meta;
+ pub mod serial;
+ pub mod snapshot_generation;
+ pub mod snapshot_staging;
+@@ -36,7 +35,6 @@ pub use mdbx_store::{
+     VerifiedOwnerSnapshot, VerifiedOwnerUtxo,
+ };
+ pub use memory::RamBackend;
+-pub use meta::{ConsensusMeta, FinalizedCheckpoint};
+ pub use serial::{
+     decode_chain_tip, decode_chain_work, decode_consensus_meta, decode_header,
+     decode_header_chain_anchor, decode_segment, decode_sparse_segment, decode_state_meta,
+diff --git a/jetsam_chain/src/storage/serial.rs b/jetsam_chain/src/storage/serial.rs
+index a56732f..01a3ff9 100644
+--- a/jetsam_chain/src/storage/serial.rs
++++ b/jetsam_chain/src/storage/serial.rs
+@@ -17,7 +17,7 @@ use crate::consensus::params::{BLOCK_MAX_ACTIONS, BLOCK_MAX_TXS};
+ use crate::fri_state::SlotValue;
+ use crate::header_anchor::HeaderChainAnchor;
+ use crate::segmented_state::SegmentColumns;
+-use crate::storage::meta::{ConsensusMeta, FinalizedCheckpoint};
++use crate::meta::{ConsensusMeta, FinalizedCheckpoint};
+ use crate::wire::BLOCK_HEADER_WIRE_SIZE;
+ use jetsam_poseidon2b::primitives::TxBodyHash;
+ 
+diff --git a/jetsam_chain/src/storage/snapshot_generation.rs b/jetsam_chain/src/storage/snapshot_generation.rs
+index f38336f..f640297 100644
+--- a/jetsam_chain/src/storage/snapshot_generation.rs
++++ b/jetsam_chain/src/storage/snapshot_generation.rs
+@@ -1614,7 +1614,7 @@ mod tests {
+     use crate::consensus::genesis::genesis_header;
+     use crate::consensus::params::coinbase_creation_id;
+     #[cfg(unix)]
+-    use crate::storage::{ConsensusMeta, FinalizedCheckpoint};
++    use crate::meta::{ConsensusMeta, FinalizedCheckpoint};
+ 
+     #[test]
+     fn spent_coinbase_undo_preimage_uses_parent_height_boundary() {
+diff --git a/jetsam_recursive/Cargo.toml b/jetsam_recursive/Cargo.toml
+index 2bd2b41..cf29412 100644
+--- a/jetsam_recursive/Cargo.toml
++++ b/jetsam_recursive/Cargo.toml
+@@ -6,7 +6,7 @@ edition = "2021"
+ [dependencies]
+ jetsam_core = { path = "../jetsam_core" }
+ jetsam_poseidon2b = { path = "../jetsam_poseidon2b" }
+-jetsam_chain = { path = "../jetsam_chain" }
++jetsam_chain = { path = "../jetsam_chain", default-features = false }
+ jetsam_tx = { path = "../jetsam_tx" }
+ jetsam_gkr = { path = "../jetsam_gkr" }
+ jetsam_fri = { path = "../jetsam_fri" }

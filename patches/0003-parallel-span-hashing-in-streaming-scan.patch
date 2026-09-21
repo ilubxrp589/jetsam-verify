@@ -1,0 +1,113 @@
+diff --git a/jetsam_ivc_core/src/field_r1cs.rs b/jetsam_ivc_core/src/field_r1cs.rs
+index 6a12539..59dff02 100644
+--- a/jetsam_ivc_core/src/field_r1cs.rs
++++ b/jetsam_ivc_core/src/field_r1cs.rs
+@@ -2377,6 +2377,9 @@ impl<R: Read + Seek> SeekableFieldR1csArtifact<R> {
+         let mut group_cursor = layout.groups_at;
+         let mut row_counts: Vec<usize> = Vec::with_capacity(ARTIFACT_GROUP_ROWS);
+         let mut streams = PlanarStreamCursors::new(layout.side);
++        // Span payloads accumulate here and are hashed in parallel batches.
++        let mut span_batch: Vec<(u64, Vec<u8>)> = Vec::new();
++        let mut span_batch_bytes = 0usize;
+ 
+         for span_index in 0..num_rows.div_ceil(ARTIFACT_GROUP_ROWS) {
+             let first_row = span_index * ARTIFACT_GROUP_ROWS;
+@@ -2419,15 +2422,20 @@ impl<R: Read + Seek> SeekableFieldR1csArtifact<R> {
+                         .and_then(|e| n.checked_add(e))
+                 })
+                 .ok_or(FieldR1csArtifactError::LengthArithmetic)?;
+-            let mut span =
+-                StreamingOnePieceByteHash::new(b"JTM/IVC/FIELD-R1CS-SPAN", span_payload_len);
++            let mut payload: Vec<u8> = Vec::new();
++            payload
++                .try_reserve_exact(span_payload_len as usize)
++                .map_err(|_| FieldR1csArtifactError::Allocation {
++                    matrix: layout.side,
++                    field: "span digest payload",
++                })?;
+ 
+             let mut absolute_entry = entries_committed;
+             let mut fresh_row = F128::ZERO;
+             let mut accumulated_row = F128::ZERO;
+             for local in 0..rows {
+                 let count = row_counts[local];
+-                span.update(&(count as u64).to_le_bytes());
++                payload.extend_from_slice(&(count as u64).to_le_bytes());
+                 if count == 0 {
+                     continue;
+                 }
+@@ -2471,9 +2479,9 @@ impl<R: Read + Seek> SeekableFieldR1csArtifact<R> {
+                         next_dictionary_index += 1;
+                     }
+                     let coefficient = dictionary[value_at];
+-                    span.update(&(column as u64).to_le_bytes());
+-                    span.update(&coefficient.lo.to_le_bytes());
+-                    span.update(&coefficient.hi.to_le_bytes());
++                    payload.extend_from_slice(&(column as u64).to_le_bytes());
++                    payload.extend_from_slice(&coefficient.lo.to_le_bytes());
++                    payload.extend_from_slice(&coefficient.hi.to_le_bytes());
+                     if let Some(weights) = fresh {
+                         fresh_row += coefficient * weights.column_weight(column as usize);
+                     }
+@@ -2494,9 +2502,15 @@ impl<R: Read + Seek> SeekableFieldR1csArtifact<R> {
+             }
+             streams.finish_group(self.total_bytes)?;
+             entries_committed = running;
+-            top.update(&span.finalize());
++            span_batch_bytes += payload.len();
++            span_batch.push((span_payload_len, payload));
++            if span_batch_bytes >= SPAN_BATCH_BYTES {
++                flush_span_batch(&mut span_batch, top);
++                span_batch_bytes = 0;
++            }
+             group_cursor = group_end;
+         }
++        flush_span_batch(&mut span_batch, top);
+         if remaining_section != 0 {
+             return Err(FieldR1csArtifactError::MatrixLengthMismatch {
+                 matrix: layout.side,
+@@ -5102,6 +5116,44 @@ impl StreamingOnePieceByteHash {
+ /// digests are negligible against the span payloads.
+ const DIGEST_SPAN_ROWS: usize = 2048;
+ 
++/// Bound on buffered span payloads before a parallel hashing flush. Keeps peak
++/// memory independent of matrix size while leaving enough spans in flight to
++/// saturate a many-core machine.
++const SPAN_BATCH_BYTES: usize = 16 << 20;
++
++/// Hash a batch of span payloads in parallel and absorb the digests in order.
++///
++/// The streaming decode is inherently sequential: spans are variable length and
++/// carry the `previous_first` delta chain and the monotone dictionary-index rule
++/// across their boundaries. The Poseidon2b hashing of a span, however, depends
++/// only on that span's own bytes, which is exactly what the two-level digest
++/// construction was designed for. The resident path already exploits this in
++/// [`matrix_span_digests`]; this does the same for the streaming verifier that
++/// third parties (browsers, light clients) actually use.
++///
++/// Ordering is preserved: `par_iter().collect()` is an indexed parallel
++/// iterator, so the digests are absorbed in span order and the statement digest
++/// is bit-identical to the sequential construction.
++fn flush_span_batch(batch: &mut Vec<(u64, Vec<u8>)>, top: &mut StreamingOnePieceByteHash) {
++    use rayon::prelude::*;
++    if batch.is_empty() {
++        return;
++    }
++    let digests: Vec<[u8; 32]> = batch
++        .par_iter()
++        .map(|(payload_len, payload)| {
++            let mut span =
++                StreamingOnePieceByteHash::new(b"JTM/IVC/FIELD-R1CS-SPAN", *payload_len);
++            span.update(payload);
++            span.finalize()
++        })
++        .collect();
++    for digest in digests {
++        top.update(&digest);
++    }
++    batch.clear();
++}
++
+ /// Independent Poseidon2b digests of a coefficient matrix's rows in
+ /// [`DIGEST_SPAN_ROWS`]-row spans (parallel), each span serialized as
+ /// length-prefixed rows of `(column, coeff.lo, coeff.hi)` u64 triples.

@@ -1,0 +1,7 @@
+{
+  "metadata_digest": "148986844146fe0a4d498bd75f9938c63d1a56dfb5c9265341203c7aa7edb5c2",
+  "classes": [
+    { "class": 0, "m": 22, "k_log": 22, "k_skip": 6, "const_pin": 0, "digest": "45713e6da1c0a29fcd50fb8a82b64b2794a53dd14e35304781b9e0461ac8dd98" },
+    { "class": 1, "m": 24, "k_log": 24, "k_skip": 6, "const_pin": 0, "digest": "7acbc3f0f842de3522ea8f7adce84f01d0f758ac2f8db724ec79d2b6f7a28b47" }
+  ]
+}

@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jetsam · local chain-state verifier</title>
+<style>
+:root{
+  --paper:#efe8d8; --rule:#2c281f; --ink:#16140f;
+  --ink-2:rgba(22,20,15,.60); --ink-3:rgba(22,20,15,.38);
+  --blue:#1f3d73; --caution:#ead38a; --fail:#8f1209; --fail-bg:#2a0705; --pass:#1c4a32;
+  --carbon:#141310;
+  --serif:Georgia,"Iowan Old Style","Times New Roman",serif;
+  --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;
+  line-height:1.5;-webkit-font-smoothing:antialiased}
+.sheet{max-width:1200px;margin:0 auto;padding:34px 40px 70px}
+.sc{font-size:11px;letter-spacing:.13em;text-transform:uppercase;font-weight:700;color:var(--ink-2)}
+.mono{font-family:var(--mono)}
+
+/* ── mast ── */
+.mast{display:flex;align-items:baseline;justify-content:space-between;gap:30px;flex-wrap:wrap}
+.mast h1{font-family:var(--serif);font-size:31px;font-weight:400;margin:0;letter-spacing:-.01em}
+.mast .const{font-family:var(--mono);font-size:12.5px;color:var(--ink-2);white-space:nowrap}
+.rule-thick{height:4px;background:var(--rule);margin:14px 0 0}
+.rule-thin{height:1px;background:var(--rule);opacity:.28;margin:0 0 22px}
+
+/* ── frame ── */
+.frame{display:grid;grid-template-columns:340px 1fr;gap:34px;align-items:start}
+
+/* ── trust rail ── */
+.rail>*+*{margin-top:22px}
+.chip{border:2px solid var(--rule);padding:11px 13px}
+.chip .st{font-family:var(--mono);font-size:15px;font-weight:700;letter-spacing:.06em}
+.chip .sub{font-size:12px;color:var(--ink-2);margin-top:3px;line-height:1.4}
+.chip.unknown{border-color:var(--ink-3);color:var(--ink-2)}
+.chip.full{background:#fff;border-color:var(--blue)} .chip.full .st{color:var(--blue)}
+.chip.cached{background:var(--caution);border-color:var(--rule)}
+
+.plate{border:2px dashed var(--rule);padding:13px 14px 12px;background:#f7f3e9}
+.plate .val{font-family:var(--mono);font-size:15px;line-height:1.45;word-break:break-all;margin-top:7px}
+.plate button{margin-top:10px;font-family:var(--sans);font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;font-weight:700;background:none;border:1px solid var(--rule);
+  padding:5px 10px;cursor:pointer;color:var(--ink)}
+.plate button:hover{background:var(--rule);color:var(--paper)}
+
+.stack h4{margin:0 0 6px;font-size:11px;letter-spacing:.13em;text-transform:uppercase;font-weight:700}
+.stack ul{margin:0;padding-left:16px;font-size:13px;color:var(--ink-2);line-height:1.62}
+.stack li+li{margin-top:3px}
+.stack+.stack{margin-top:16px}
+
+.meter{border-top:1px solid var(--ink-3);padding-top:13px}
+.meter canvas{width:100%;height:46px;display:block;margin:8px 0 6px;
+  border-bottom:1px solid var(--rule)}
+.meter .row{display:flex;justify-content:space-between;align-items:baseline;
+  font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
+.meter .hint{font-size:11px;color:var(--ink-3);line-height:1.45;margin-top:7px}
+
+details.env{border-top:1px solid var(--ink-3);padding-top:12px}
+details.env summary{cursor:pointer;list-style:none}
+details.env summary::-webkit-details-marker{display:none}
+.envgrid{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin-top:9px;
+  font-family:var(--mono);font-size:12px;color:var(--ink-2)}
+
+/* ── stage ── */
+.stage{border:2px solid var(--rule);background:#f7f3e9;min-height:430px;padding:28px 30px;position:relative}
+.stage .head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:20px}
+.stage .clock{font-family:var(--mono);font-size:13px;color:var(--ink-2)}
+.voyage{font-family:var(--serif);font-size:18px;line-height:1.55;margin:0 0 22px;max-width:58ch}
+
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1px solid var(--rule);margin-bottom:22px}
+.tiles div{padding:14px 15px}
+.tiles div+div{border-left:1px solid var(--rule)}
+.tiles .n{font-family:var(--mono);font-size:21px;line-height:1.1}
+.tiles .l{font-size:11.5px;color:var(--ink-2);margin-top:5px;line-height:1.35}
+
+.act{appearance:none;border:2px solid var(--rule);background:var(--rule);color:var(--paper);
+  font-family:var(--sans);font-size:15px;font-weight:600;padding:13px 30px;cursor:pointer;letter-spacing:.01em}
+.act:hover{background:var(--paper);color:var(--rule)}
+.act:disabled{opacity:.35;cursor:default;background:var(--rule);color:var(--paper)}
+.act.ghost{background:none;color:var(--ink);font-weight:500;margin-left:10px;border-width:1px}
+.act.ghost:hover{background:var(--rule);color:var(--paper)}
+
+/* phase instruments */
+.phase{border:1px solid var(--ink-3);padding:15px 17px;background:#fffdf7}
+.phase+.phase{margin-top:12px}
+.phase.run{border:2px solid var(--rule);box-shadow:3px 3px 0 rgba(44,40,31,.13)}
+.phase.done{opacity:.62}
+.phase .top{display:flex;justify-content:space-between;align-items:baseline;gap:14px}
+.phase .name{font-size:14px;font-weight:600}
+.phase .state{font-family:var(--mono);font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-2)}
+.phase.run .state{color:var(--blue)}
+.phase .meta{font-family:var(--mono);font-size:12px;color:var(--ink-2);margin-top:5px}
+.track{height:8px;border:1px solid var(--rule);margin-top:11px;background:#fff}
+.track i{display:block;height:100%;background:var(--rule);width:0;transition:width .5s linear}
+.phase.done .track i{background:var(--pass)}
+
+/* verdict */
+.stamp{border:4px solid var(--pass);padding:24px 26px;background:#fff}
+.stamp h2{font-family:var(--serif);font-size:30px;margin:0 0 4px;color:var(--pass);font-weight:400}
+.stamp .path{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-2);margin-bottom:18px}
+.stamp dl{display:grid;grid-template-columns:130px 1fr;gap:7px 18px;margin:0;font-size:13px}
+.stamp dt{color:var(--ink-2)}
+.stamp dd{margin:0;font-family:var(--mono);font-size:13px;word-break:break-all}
+
+.takeover{position:absolute;inset:0;border:8px solid var(--fail);background:var(--fail-bg);
+  color:#f3e4e2;padding:40px 44px;display:flex;flex-direction:column;justify-content:center}
+.takeover h2{font-family:var(--sans);font-size:40px;letter-spacing:.02em;margin:0 0 14px;
+  font-weight:800;line-height:1.05}
+.takeover p{margin:0 0 20px;font-size:16px;max-width:52ch;line-height:1.5;color:#e4cfcc}
+.takeover .why{font-family:var(--mono);font-size:12.5px;color:#d8b3ae;border-top:1px solid rgba(243,228,226,.22);
+  padding-top:14px;word-break:break-all}
+
+/* transcript */
+.transcript{margin-top:26px}
+.transcript .bar{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+.transcript .log{background:var(--carbon);color:#b9b2a2;font-family:var(--mono);font-size:11.5px;
+  line-height:1.75;height:160px;overflow-y:auto;padding:13px 15px;white-space:pre-wrap}
+
+.mobile{display:none;border:2px solid var(--rule);padding:16px;margin-bottom:22px;font-size:14px}
+
+/* ── instrument motion ──────────────────────────────────────────────────
+   Motion exists only to prove work is happening during the 5.7 / 24.8 / 5.3
+   minute jobs. Nothing loops while the page is idle. */
+.clock,.phase .meta,.stamp dd{font-variant-numeric:tabular-nums}
+
+/* determinate fill: width = elapsed/expected, ticked every 250ms */
+.track i{transition:width 250ms linear}
+
+/* only the RUNNING phase is hatched; queued and complete are still */
+.phase.run{position:relative;overflow:hidden}
+.phase.run::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(-45deg,transparent,transparent 6px,
+    rgba(22,20,15,.08) 6px,rgba(22,20,15,.08) 12px);
+  background-size:24px 24px;animation:hatch 8s linear infinite}
+@keyframes hatch{to{background-position:24px 0}}
+.phase.flash{animation:inkflash 180ms ease-out}
+@keyframes inkflash{from{background:#e6ddc8}to{background:#fffdf7}}
+
+/* liveness: proves the tab is alive through a 25-minute phase */
+.pulse{width:6px;height:6px;background:var(--ink);display:inline-block;margin-right:8px;
+  animation:beat 2s steps(2,end) infinite;vertical-align:1px}
+@keyframes beat{0%,49%{opacity:1}50%,100%{opacity:.15}}
+.clock{display:inline-flex;align-items:center}
+
+.log-line{animation:linein 120ms ease-out}
+@keyframes linein{from{opacity:0}to{opacity:1}}
+
+.stamp-in{animation:stampin 220ms ease-out}
+@keyframes stampin{from{transform:scale(1.06);opacity:.4}to{transform:scale(1);opacity:1}}
+
+/* the plate crawls only while a FULL re-derivation is actually running */
+.plate.working{background-image:repeating-linear-gradient(90deg,#fffdf6 0 14px,#e4dcc8 14px 28px);
+  background-size:28px 100%;animation:crawl 20s linear infinite}
+@keyframes crawl{from{background-position:0 0}to{background-position:28px 0}}
+
+#stagebody.swap{animation:stagein 160ms ease-out}
+@keyframes stagein{from{opacity:0}to{opacity:1}}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation:none !important;transition:none !important}
+}
+@media(max-width:1000px){
+  .frame{grid-template-columns:1fr}
+  .mobile{display:block}
+}
+</style>
+
+<div class="sheet">
+
+  <div class="mast">
+    <h1>Jetsam <span style="color:var(--ink-3)">·</span> local chain-state verifier</h1>
+    <div class="const">v1.2.0 · proof 872 KB · params 16.1 MB once</div>
+  </div>
+  <div class="rule-thick"></div>
+  <div class="rule-thin"></div>
+
+  <div class="mobile"><b>Desktop required.</b> Authenticating the parameters peaks near 4.3 GB of
+    memory and needs browser threads. This will not complete on a phone.</div>
+
+  <div class="frame">
+
+    <aside class="rail">
+      <div class="chip unknown" id="chip">
+        <div class="st" id="chipst">UNKNOWN</div>
+        <div class="sub" id="chipsub">No proof checked this session.</div>
+      </div>
+
+      <div>
+        <div class="sc">The only external trust</div>
+        <div class="plate" id="plate">
+          <div class="sc" style="font-size:10px;color:var(--ink-3)">metadata digest · poseidon2b</div>
+          <div class="val" id="pin">148986844146fe0a4d498bd75f9938c63d1a56dfb5c9265341203c7aa7edb5c2</div>
+          <button id="copy">Copy</button>
+        </div>
+        <div style="font-size:12px;color:var(--ink-2);margin-top:9px;line-height:1.5">
+          Embedded in the published <span class="mono">jetsam-node</span> v1.2.0 binary.
+          Check its SHA256 on
+          <a href="https://github.com/jetsam-chain/jetsam/releases" style="color:var(--blue)">GitHub releases</a>.
+        </div>
+      </div>
+
+      <div>
+        <div class="stack">
+          <h4>Checked here, not trusted</h4>
+          <ul>
+            <li>Chain proof, headers, state</li>
+            <li>The 16.1 MB of proving parameters</li>
+            <li>Every field operation, replayed locally</li>
+          </ul>
+        </div>
+        <div class="stack">
+          <h4>Trusted: one hash</h4>
+          <ul>
+            <li>That the published release is genuine</li>
+            <li>Nothing else, and no server</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="meter" id="storewrap">
+        <div class="sc">Stored on this device</div>
+        <div class="row" style="margin-top:8px"><span id="storeval">—</span>
+          <span id="storeperm" style="font-size:11px"></span></div>
+        <div class="hint" id="storehint">Verified parameters are kept here so the long
+          re-derivation never repeats.</div>
+        <button id="clear" style="display:none;margin-top:9px;font-family:var(--sans);font-size:11px;
+          letter-spacing:.1em;text-transform:uppercase;font-weight:700;background:none;
+          border:1px solid var(--rule);padding:5px 10px;cursor:pointer;color:var(--ink)">Clear storage</button>
+      </div>
+
+      <div class="meter">
+        <div class="sc">Machine load</div>
+        <canvas id="spark" width="640" height="92"></canvas>
+        <div class="row"><span id="sparkval">idle</span><span id="sparkthreads"></span></div>
+        <div class="hint">Browsers cannot report CPU. This is main-thread scheduling latency:
+          how late a 250&nbsp;ms timer actually fires. It rises when every core is busy, and it is
+          the same measurement that proves this tab is not frozen.</div>
+      </div>
+
+      <details class="env" id="envwrap">
+        <summary class="sc">Environment</summary>
+        <div class="envgrid" id="envgrid"></div>
+      </details>
+    </aside>
+
+    <main class="stage" id="stage">
+      <div class="head">
+        <div class="sc" id="stagelabel">Readiness</div>
+        <div class="clock"><span class="pulse" id="pulse" hidden></span><span id="sessionclock"></span></div>
+      </div>
+      <div id="stagebody"></div>
+    </main>
+  </div>
+
+  <div class="transcript">
+    <div class="bar"><span class="sc">Worker transcript</span>
+      <span class="sc" style="color:var(--ink-3)" id="tcount"></span></div>
+    <div class="log" id="log">idle</div>
+  </div>
+</div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const DIAG = new URLSearchParams(location.search).get("diag") === "1";
+const T0 = performance.now();
+const logEl = $("log");
+let lineCount = 0;
+const log = (m) => {
+  if (lineCount === 0) logEl.textContent = "";
+  const d = document.createElement("div");
+  d.className = "log-line"; d.textContent = m;
+  logEl.appendChild(d);
+  if (++lineCount > 200) { logEl.firstChild.remove(); lineCount--; }
+  logEl.scrollTop = logEl.scrollHeight;
+  $("tcount").textContent = `${lineCount} lines`;
+  console.log("[jtm] " + m);
+  if (DIAG) fetch("log", { method: "POST", body: `+${((performance.now()-T0)/1000).toFixed(0)}s ${m}` })
+    .catch(() => {}); };
+
+// Measured on a 6-core desktop. Shown as expectations, never as completion.
+const EXPECT = { 0: 341, 1: 1490, verify: 319 };
+const clk = (s) => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
+
+/* Run clock. Digits changing IS the animation. It times the RUN, not the page
+   session, and freezes the moment there is a result: a clock still ticking next
+   to a finished verdict reads as work still in progress. Nothing ticks at idle. */
+let runStart = 0, runTimer = null;
+function clockStart() {
+  runStart = performance.now();
+  clearInterval(runTimer);
+  runTimer = setInterval(() => {
+    $("sessionclock").textContent = clk((performance.now() - runStart) / 1000);
+  }, 250);
+}
+function clockStop() {
+  clearInterval(runTimer); runTimer = null;
+  if (runStart) $("sessionclock").textContent = `${clk((performance.now()-runStart)/1000)} total`;
+}
+$("sessionclock").textContent = "";
+
+
+/* ── storage: real usage, and ask the browser not to evict it ──────────────
+   Without persist() this is best-effort storage: the browser may drop ~913 MB
+   under disk pressure and the visitor silently faces the 29-minute path again. */
+async function storage() {
+  const el = $("storeval"), perm = $("storeperm"), hint = $("storehint"), btn = $("clear");
+  if (!navigator.storage?.estimate) { el.textContent = "not reportable"; return; }
+  const { usage = 0 } = await navigator.storage.estimate();
+  const mb = usage / 1048576;
+  el.textContent = mb < 1 ? "nothing stored" : `${mb.toFixed(0)} MB`;
+  btn.style.display = mb > 1 ? "inline-block" : "none";
+  if (navigator.storage.persisted) {
+    const already = await navigator.storage.persisted();
+    const ok = already || (mb > 1 && await navigator.storage.persist().catch(() => false));
+    perm.textContent = ok ? "persistent" : "evictable";
+    perm.style.color = ok ? "var(--pass)" : "var(--ink-3)";
+    if (!ok && mb > 1)
+      hint.textContent = "The browser has not granted persistent storage, so it may evict these " +
+        "parameters under disk pressure. If that happens the long re-derivation runs again.";
+  }
+}
+
+/* ── machine load: real scheduling latency, not a fabricated CPU gauge ──
+   Sampled only while a job is running, so nothing loops when the page is idle. */
+const spark = $("spark"), sctx = spark.getContext("2d");
+const SAMPLES = 80, lag = [];
+let lagTimer = null, lastTick = 0;
+
+function drawSpark() {
+  const w = spark.width, h = spark.height;
+  sctx.clearRect(0, 0, w, h);
+  if (!lag.length) return;
+  const bw = w / SAMPLES;
+  // 0..250ms maps to full height; anything worse is clamped and flagged.
+  const scale = (v) => Math.min(1, v / 250);
+  sctx.fillStyle = "#16140f";
+  lag.forEach((v, i) => {
+    const bh = Math.max(1, scale(v) * (h - 2));
+    sctx.fillRect(i * bw, h - bh, Math.max(1, bw - 1.5), bh);
+  });
+}
+function startLoad() {
+  lag.length = 0; lastTick = performance.now();
+  clearInterval(lagTimer);
+  lagTimer = setInterval(() => {
+    const now = performance.now();
+    const drift = Math.max(0, (now - lastTick) - 250);
+    lastTick = now;
+    lag.push(drift); if (lag.length > SAMPLES) lag.shift();
+    drawSpark();
+    const recent = lag.slice(-8);
+    const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+    $("sparkval").textContent = `+${avg.toFixed(0)} ms late · peak +${Math.max(...lag).toFixed(0)} ms`;
+  }, 250);
+}
+function stopLoad() {
+  clearInterval(lagTimer); lagTimer = null;
+  $("sparkval").textContent = "idle";
+}
+
+/* trust chip */
+function chip(kind) {
+  const c = $("chip"), st = $("chipst"), sub = $("chipsub");
+  c.className = "chip " + kind;
+  if (kind === "full")   { st.textContent = "FULL";   sub.textContent = "Trusts only the published digest."; }
+  else if (kind === "cached") { st.textContent = "CACHED"; sub.textContent = "Trusts this browser's IndexedDB."; }
+  else { st.textContent = "UNKNOWN"; sub.textContent = "No proof checked this session."; }
+}
+
+/* environment rail */
+function env(rows) {
+  $("envgrid").innerHTML = Object.entries(rows)
+    .map(([k, v]) => `<span style="color:var(--ink-3)">${k}</span><span>${v}</span>`).join("");
+  if (DIAG) $("envwrap").open = true;
+}
+
+/* ── stage renderers ── */
+const stage = $("stagebody"), label = $("stagelabel");
+let painted = false;
+let jobRunning = false;
+let tamperMode = false;
+addEventListener("beforeunload", (e) => {
+  if (!jobRunning) return;
+  e.preventDefault();          // a scan in flight cannot be resumed
+  e.returnValue = "";
+});
+function paint(html) {
+  stage.innerHTML = html;
+  if (painted) { stage.classList.remove("swap"); void stage.offsetWidth; stage.classList.add("swap"); }
+  painted = true;
+}
+const VOYAGE = `Jetsam is cargo thrown overboard that still proves the voyage. This page takes one
+  proof from a server it does not trust and checks the entire chain here, on this machine.`;
+
+function stageReady(cold, cores) {
+  label.textContent = cold ? "Consent" : "Ready";
+  paint(`
+    <p class="voyage">${VOYAGE}</p>
+    ${cold ? `<div class="tiles">
+      <div><div class="n">3.68 MB</div><div class="l">parameter set 1<br>~5.7 min once</div></div>
+      <div><div class="n">12.42 MB</div><div class="l">parameter set 2<br>~24.8 min once</div></div>
+      <div><div class="n">872 KB</div><div class="l">the proof itself<br>~5.3 min each time</div></div>
+    </div>
+    <p style="font-size:13.5px;color:var(--ink-2);max-width:60ch;margin:0 0 22px;line-height:1.6">
+      The first run re-derives the parameters from scratch, and that is what makes the result
+      trustworthy rather than merely reported. It is slow because this chain's cryptography uses CPU
+      instructions WebAssembly does not have; a native node is roughly 50× faster. About 913 MB is
+      stored here afterwards so it never repeats.</p>
+    <div style="border-left:3px solid var(--rule);padding:11px 0 11px 14px;margin:0 0 22px;
+                font-size:13px;line-height:1.6;max-width:58ch">
+      <b>Keep this tab open until a set completes.</b> Each set is banked the moment it finishes and
+      never needs redoing, but a set still in progress cannot be resumed. Closing the tab restarts
+      that set from the beginning. Set&nbsp;2 runs about 25 minutes.</div>`
+    : `<p style="font-size:13.5px;color:var(--ink-2);max-width:60ch;margin:0 0 22px;line-height:1.6">
+      Parameters were already authenticated on this device, so the long step is skipped. That reuses
+      this browser's own storage. No server is trusted, but it is a weaker claim than a full
+      re-derivation.</p>`}
+    <button class="act" id="go">${cold ? "Begin verification" : "Verify chain now"}</button>
+    ${cold ? "" : `<button class="act ghost" id="fresh">Re-derive from scratch</button>
+       <button class="act ghost" id="tamper">Reject a tampered proof</button>`}`);
+  wire();
+}
+
+function stagePhases() {
+  label.textContent = "Authenticating parameters";
+  paint(`
+    <div class="phase" id="p0"><div class="top"><span class="name">Parameter set 1 · m=22 · 3.68 MB</span>
+      <span class="state">queued</span></div>
+      <div class="meta">—</div><div class="track"><i></i></div></div>
+    <div class="phase" id="p1"><div class="top"><span class="name">Parameter set 2 · m=24 · 12.42 MB</span>
+      <span class="state">queued</span></div>
+      <div class="meta">—</div><div class="track"><i></i></div></div>
+    <p style="font-size:12.5px;color:var(--ink-2);margin:16px 0 0;max-width:58ch;line-height:1.55">
+      Keep this tab open. A set is banked the moment it completes and never needs redoing, but a set
+      still in progress cannot be resumed. Closing now restarts it.</p>`);
+}
+
+function stageVerify() {
+  label.textContent = "Replaying proof";
+  paint(`
+    <div class="phase run" id="pv"><div class="top"><span class="name">Proof replay · 872 KB</span>
+      <span class="state">running</span></div>
+      <div class="meta">—</div><div class="track"><i></i></div></div>
+    <p style="font-size:13px;color:var(--ink-2);margin-top:18px;max-width:58ch;line-height:1.6">
+      Every field operation is being recomputed here. A wrong byte anywhere in the proof, the headers
+      or the parameters makes this fail rather than mislead.</p>`);
+}
+
+/* a running phase panel: elapsed + remaining against the measured expectation */
+const timers = {};
+function runPhase(id, expect) {
+  const el = $(id); if (!el) return;
+  el.className = "phase run";
+  el.querySelector(".state").textContent = "running";
+  const t0 = performance.now();
+  clearInterval(timers[id]);
+  timers[id] = setInterval(() => {
+    const s = (performance.now() - t0) / 1000;
+    el.querySelector(".track i").style.width = `${Math.min(100, 100 * s / expect)}%`;
+    el.querySelector(".meta").textContent = s < expect
+      ? `elapsed ${clk(s)} · about ${clk(expect - s)} remaining (measured average ${clk(expect)})`
+      : `elapsed ${clk(s)} · past the ${clk(expect)} average, still working`;
+  }, 250);
+}
+function endPhase(id, text) {
+  clearInterval(timers[id]);
+  const el = $(id); if (!el) return;
+  el.className = "phase done flash";
+  setTimeout(() => el.classList.remove("flash"), 200);
+  el.querySelector(".state").textContent = "complete";
+  el.querySelector(".track i").style.width = "100%";
+  el.querySelector(".meta").textContent = text;
+}
+
+/* ── worker ── */
+const worker = new Worker("verify-worker.js", { type: "module" });
+function wire() {
+  const go = $("go"), fresh = $("fresh");
+  if (go) go.onclick = () => {
+    go.disabled = true; tamperMode = false; stagePhases(); chip("unknown");
+    jobRunning = true; $("pulse").hidden = false; startLoad(); clockStart();
+    worker.postMessage({ type: "run" });
+  };
+  const tam = $("tamper");
+  if (tam) tam.onclick = () => {
+    tamperMode = true;
+    if (go) { go.disabled = true; go.textContent = "Working…"; }
+    stagePhases(); chip("unknown");
+    jobRunning = true; $("pulse").hidden = false; startLoad(); clockStart();
+    worker.postMessage({ type: "run", tamper: true });
+  };
+  if (fresh) fresh.onclick = () => {
+    indexedDB.deleteDatabase("jetsam-verify");
+    log("cleared stored parameters, next run re-derives everything");
+    stageReady(true);
+  };
+}
+
+worker.onmessage = ({ data: m }) => {
+  switch (m.type) {
+    case "probe": {
+      $("sparkthreads").textContent = `${m.cores || "?"} threads`;
+      env({ "threads": m.cores || "?", "isolated": String(m.isolated),
+            "deviceMemory": (navigator.deviceMemory ? navigator.deviceMemory + " GB" : "n/a"),
+            "params cached": m.cached >= 2 ? "yes (2 sets)" : "no" });
+      if (!m.isolated) {
+        label.textContent = "Unavailable";
+        paint(`<p class="voyage">${VOYAGE}</p>
+          <div style="border:2px solid var(--fail);padding:15px;font-size:14px;max-width:58ch">
+          This browser is not cross-origin isolated, so the engine cannot start worker threads.
+          Use a current desktop Chrome, Edge or Firefox.</div>`);
+        return;
+      }
+      stageReady(m.cached < 2, m.cores);
+      storage();
+      log(`ready · ${m.cores} cores · parameters ${m.cached >= 2 ? "already verified on this device" : "not yet verified here"}`);
+      break;
+    }
+    case "engine": log(`engine up · ${m.threads} worker threads`); break;
+    case "tampered":
+      log(`DELIBERATE TEST: flipped one bit at byte ${m.at} of ${m.total} in the proof`);
+      break;
+    case "metadata": log(`parameters authenticated against ${m.pin.slice(0,16)}…`); break;
+    case "matrix": {
+      const id = `p${m.cls}`;
+      if (m.mode === "cached") {
+        endPhase(id, `restored from this device in ${Math.round(m.ms)} ms`);
+        log(`matrix ${m.cls+1}: restored from cache in ${Math.round(m.ms)} ms`);
+      } else if (m.mode === "scanning") {
+        // the plate crawls only while a real re-derivation is under way
+        $("plate").classList.add("working");
+        runPhase(id, EXPECT[m.cls]);
+        log(`matrix ${m.cls+1}: re-deriving from scratch (m=${m.m})`);
+      } else {
+        $("plate").classList.remove("working");
+        endPhase(id, `verified in ${clk(m.ms/1000)} · ${m.cachedMb.toFixed(0)} MB stored here`);
+        storage();
+        log(`matrix ${m.cls+1}: verified in ${clk(m.ms/1000)}, cached ${m.cachedMb.toFixed(0)} MB`);
+      }
+      break;
+    }
+    case "stage":
+      if (m.stage === "fetch") { label.textContent = "Fetching proof"; log("fetching live proof…"); }
+      if (m.stage === "verify") { stageVerify(); runPhase("pv", EXPECT.verify); }
+      break;
+    case "chain":
+      log(`proof for height ${m.height} (tip ${m.tip}), epoch anchor ${m.anchor}, ${(m.bytes/1024).toFixed(0)} KB`);
+      break;
+    case "verified": {
+      endPhase("pv", `completed in ${clk(m.seconds)}`);
+      if (m.tamper) {                       // must never happen
+        log("ALARM: a tampered proof was ACCEPTED. This is a serious bug, not a success");
+        chip("unknown"); clockStop(); stopLoad();
+        $("pulse").hidden = true; jobRunning = false;
+        const t = document.createElement("div");
+        t.className = "takeover";
+        t.innerHTML = `<h2>TAMPERED PROOF ACCEPTED</h2>
+          <p>A deliberately corrupted proof passed verification. That should be impossible.
+             Do not trust this page until it is explained.</p>
+          <div class="why">byte ${m.tamperAt} was altered and the check still passed</div>`;
+        $("stage").appendChild(t);
+        return;
+      }
+      const full = m.trust === "full";
+      chip(full ? "full" : "cached");
+      label.textContent = "Result";
+      jobRunning = false; $("pulse").hidden = true; $("plate").classList.remove("working");
+      stopLoad(); clockStop();
+      paint(`
+        <div class="stamp stamp-in">
+          <h2>Chain verified</h2>
+          <div class="path">${full ? "path · full re-derivation, published digest only"
+                                   : "path · cached parameters from this browser"}</div>
+          <dl>
+            <dt>Block height</dt><dd>${m.height}</dd>
+            <dt>Semantic ID</dt><dd>${m.semantic_id}</dd>
+            <dt>Proof class</dt><dd>${m.class}</dd>
+            <dt>Replay time</dt><dd>${clk(m.seconds)}</dd>
+          </dl>
+        </div>
+        <button class="act" id="go" style="margin-top:20px">Verify again</button>
+        <button class="act ghost" id="fresh">Re-derive from scratch</button>
+        <button class="act ghost" id="tamper">Reject a tampered proof</button>`);
+      wire();
+      log(`VERIFIED height ${m.height} in ${clk(m.seconds)}`);
+      break;
+    }
+    case "failed": {
+      for (const k in timers) clearInterval(timers[k]);
+      jobRunning = false; $("pulse").hidden = true; $("plate").classList.remove("working");
+      stopLoad(); clockStop();
+      chip("unknown");
+      label.textContent = "Result";
+      const t = document.createElement("div");
+      t.className = "takeover";
+      t.innerHTML = m.tamper
+        ? `<h2>TAMPERED PROOF REJECTED</h2>
+           <p>One bit of the proof was altered on purpose before verification, and the check caught
+              it. The chain is fine. This is what a bad proof looks like.</p>
+           <div class="why">deliberate test · ${m.message}</div>`
+        : `<h2>VERIFICATION FAILED</h2>
+           <p>This proof did not check out on this machine. Do not rely on any chain data behind it.</p>
+           <div class="why">${m.message}</div>`;
+      $("stage").appendChild(t);
+      log(`FAILED: ${m.message}`);
+      break;
+    }
+  }
+};
+worker.onerror = (e) => log(`worker error: ${e.message}`);
+
+$("clear").onclick = async () => {
+  const { usage = 0 } = await navigator.storage.estimate();
+  const mb = (usage / 1048576).toFixed(0);
+  if (!confirm(`Delete ${mb} MB of verified parameters?\n\n` +
+      `This frees the space, but the next verification has to re-derive them from scratch, ` +
+      `about 29 minutes. The proof itself is unaffected.`)) return;
+  indexedDB.deleteDatabase("jetsam-verify");
+  log(`cleared ${mb} MB of stored parameters, next run re-derives them`);
+  setTimeout(() => { storage(); stageReady(true); chip("unknown"); }, 400);
+};
+
+$("copy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("pin").textContent.trim());
+        $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy", 1400); }
+  catch { $("copy").textContent = "Select manually"; }
+};
+chip("unknown");
+worker.postMessage({ type: "probe" });
+if (new URLSearchParams(location.search).get("auto") === "1") {
+  const t = setInterval(() => { const g = $("go"); if (g && !g.disabled) { clearInterval(t); g.click(); } }, 500);
+}
+</script>

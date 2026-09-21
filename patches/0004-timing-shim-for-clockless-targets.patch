@@ -1,0 +1,1841 @@
+diff --git a/jetsam_fri_binius/src/capsule.rs b/jetsam_fri_binius/src/capsule.rs
+index ddc2de7..36b7b47 100644
+--- a/jetsam_fri_binius/src/capsule.rs
++++ b/jetsam_fri_binius/src/capsule.rs
+@@ -160,7 +160,7 @@ fn capsule_profile() -> bool {
+ macro_rules! capsule_stage {
+     ($label:expr, $body:expr) => {{
+         if capsule_profile() {
+-            let t = std::time::Instant::now();
++            let t = crate::timing::Instant::now();
+             let out = $body;
+             eprintln!(
+                 "capsule {:<14} {:>9.3} ms",
+diff --git a/jetsam_fri_binius/src/compact_fri.rs b/jetsam_fri_binius/src/compact_fri.rs
+index 01beac2..8e731a7 100644
+--- a/jetsam_fri_binius/src/compact_fri.rs
++++ b/jetsam_fri_binius/src/compact_fri.rs
+@@ -28,7 +28,8 @@ use jetsam_fri::hasher::{CryptographicHasher, HashOutput};
+ use jetsam_fri::merkle::{compute_leaf_hashes, MerkleTree, VectorCommitment};
+ use jetsam_fri::Channel;
+ use rayon::prelude::*;
+-use std::time::{Duration, Instant};
++use crate::timing::Instant;
++use std::time::Duration;
+ 
+ /// Compact FRI TAU: number of high variables handled by tensor decomposition.
+ /// TAU=8 means 2^8=256 upper partial evaluations and log_len-8 FRI rounds.
+diff --git a/jetsam_fri_binius/src/lib.rs b/jetsam_fri_binius/src/lib.rs
+index cf19432..caff6f0 100644
+--- a/jetsam_fri_binius/src/lib.rs
++++ b/jetsam_fri_binius/src/lib.rs
+@@ -36,6 +36,7 @@
+ //! and raising the provable floor by query count alone (~148 queries for
+ //! 128-bit Johnson) would roughly double the opening bytes.
+ 
++pub(crate) mod timing;
+ pub mod capsule;
+ pub mod compact_fri;
+ pub mod encode_kernel;
+diff --git a/jetsam_fri_binius/src/mixed_open.rs b/jetsam_fri_binius/src/mixed_open.rs
+index 6ce55ce..63d3b45 100644
+--- a/jetsam_fri_binius/src/mixed_open.rs
++++ b/jetsam_fri_binius/src/mixed_open.rs
+@@ -29,7 +29,8 @@ use jetsam_fri::merkle::{compute_leaf_hashes, MerkleTree, VectorCommitment};
+ use jetsam_fri::Channel;
+ use rayon::prelude::*;
+ use std::borrow::Cow;
+-use std::time::{Duration, Instant};
++use crate::timing::Instant;
++use std::time::Duration;
+ 
+ use crate::compact_fri::{
+     compact_fri_prove_with_query_hook, compact_fri_verify_with_query_hook, gen_compact_queries,
+diff --git a/jetsam_fri_binius/src/timing.rs b/jetsam_fri_binius/src/timing.rs
+new file mode 100644
+index 0000000..918fc25
+--- /dev/null
++++ b/jetsam_fri_binius/src/timing.rs
+@@ -0,0 +1,33 @@
++//! Monotonic clock for instrumentation.
++//!
++//! `wasm32-unknown-unknown` has no clock: `std::time::Instant::now()` panics
++//! inside `std::sys::time::unsupported`, which aborts the verifier. Every use
++//! of `Instant` in this crate is instrumentation whose output is gated behind
++//! an environment variable, so on wasm we substitute a zero-sized stub that
++//! reports zero durations instead of killing the process.
++//!
++//! On every other target this is exactly `std::time::Instant`.
++#[cfg(not(target_arch = "wasm32"))]
++pub(crate) use std::time::Instant;
++
++#[cfg(target_arch = "wasm32")]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Instant;
++
++#[cfg(target_arch = "wasm32")]
++impl Instant {
++    #[inline]
++    pub(crate) fn now() -> Self {
++        Self
++    }
++
++    #[inline]
++    pub(crate) fn elapsed(&self) -> core::time::Duration {
++        core::time::Duration::ZERO
++    }
++
++    #[inline]
++    pub(crate) fn duration_since(&self, _earlier: Self) -> core::time::Duration {
++        core::time::Duration::ZERO
++    }
++}
+diff --git a/jetsam_gkr/src/block_spine.rs b/jetsam_gkr/src/block_spine.rs
+index 7d77491..4ed3efc 100644
+--- a/jetsam_gkr/src/block_spine.rs
++++ b/jetsam_gkr/src/block_spine.rs
+@@ -48,7 +48,8 @@ use crate::layers::{
+ use crate::spine_mle::{sigma_at, N_SPINE_ELEM_VARS, N_SPINE_ROUND_VARS};
+ use crate::spine_sumcheck::N_SPINE_SLOTS;
+ use jetsam_core::sumcheck::{CompressedRoundPolynomial, RoundPolynomial};
+-use std::time::{Duration, Instant};
++use crate::timing::Instant;
++use std::time::Duration;
+ 
+ const ELEM_BITS: usize = N_SPINE_ELEM_VARS; // 2
+ const ROUND_BITS: usize = N_SPINE_ROUND_VARS; // 7
+diff --git a/jetsam_gkr/src/lib.rs b/jetsam_gkr/src/lib.rs
+index 4c6677b..cd0537b 100644
+--- a/jetsam_gkr/src/lib.rs
++++ b/jetsam_gkr/src/lib.rs
+@@ -30,6 +30,7 @@
+ //! let _ = jetsam_gkr::ghost_tx::ghost_authorization();
+ //! ```
+ 
++pub(crate) mod timing;
+ pub mod accepted_claim_killshot;
+ pub mod batch_eval;
+ pub mod block_spine;
+diff --git a/jetsam_gkr/src/timing.rs b/jetsam_gkr/src/timing.rs
+new file mode 100644
+index 0000000..918fc25
+--- /dev/null
++++ b/jetsam_gkr/src/timing.rs
+@@ -0,0 +1,33 @@
++//! Monotonic clock for instrumentation.
++//!
++//! `wasm32-unknown-unknown` has no clock: `std::time::Instant::now()` panics
++//! inside `std::sys::time::unsupported`, which aborts the verifier. Every use
++//! of `Instant` in this crate is instrumentation whose output is gated behind
++//! an environment variable, so on wasm we substitute a zero-sized stub that
++//! reports zero durations instead of killing the process.
++//!
++//! On every other target this is exactly `std::time::Instant`.
++#[cfg(not(target_arch = "wasm32"))]
++pub(crate) use std::time::Instant;
++
++#[cfg(target_arch = "wasm32")]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Instant;
++
++#[cfg(target_arch = "wasm32")]
++impl Instant {
++    #[inline]
++    pub(crate) fn now() -> Self {
++        Self
++    }
++
++    #[inline]
++    pub(crate) fn elapsed(&self) -> core::time::Duration {
++        core::time::Duration::ZERO
++    }
++
++    #[inline]
++    pub(crate) fn duration_since(&self, _earlier: Self) -> core::time::Duration {
++        core::time::Duration::ZERO
++    }
++}
+diff --git a/jetsam_ivc_core/src/deep_chain.rs b/jetsam_ivc_core/src/deep_chain.rs
+index b74c7c3..b0d805b 100644
+--- a/jetsam_ivc_core/src/deep_chain.rs
++++ b/jetsam_ivc_core/src/deep_chain.rs
+@@ -1265,7 +1265,7 @@ pub fn prove_ragged_multi_deep_chain_walk<Ch: Challenger>(
+     out_groups: &[Vec<LaneClaimGroup>],
+     challenger: &mut Ch,
+ ) -> (MultiDeepChainWalkProof, Vec<LaneClaimGroup>) {
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     let timing_enabled = std::env::var_os("NOIDH_DEEP_CHAIN_TIMING").is_some();
+     assert!(!s0_instances.is_empty(), "at least one walk instance");
+     assert_eq!(
+@@ -1293,7 +1293,7 @@ pub fn prove_ragged_multi_deep_chain_walk<Ch: Challenger>(
+     }
+     // Layer states retain each native width.  In particular, a smaller state
+     // is not cloned into a 2^W outer witness merely to share sumcheck rounds.
+-    let state_init_started = std::time::Instant::now();
++    let state_init_started = crate::timing::Instant::now();
+     let mut layer_states: Vec<RaggedDescendingLayerStates> = s0_instances
+         .par_iter()
+         .map(|&s0| RaggedDescendingLayerStates::new(s0))
+@@ -1309,7 +1309,7 @@ pub fn prove_ragged_multi_deep_chain_walk<Ch: Challenger>(
+     let mut sumcheck_elapsed = std::time::Duration::ZERO;
+     let mut finish_elapsed = std::time::Duration::ZERO;
+     for layer in (1..=N_ROUNDS).rev() {
+-        let setup_started = std::time::Instant::now();
++        let setup_started = crate::timing::Instant::now();
+         let q = layer - 1;
+         let alpha = challenger.sample_f128();
+         let total_groups = groups.iter().map(Vec::len).sum();
+@@ -1355,7 +1355,7 @@ pub fn prove_ragged_multi_deep_chain_walk<Ch: Challenger>(
+         }
+         setup_elapsed += setup_started.elapsed();
+ 
+-        let state_fetch_started = std::time::Instant::now();
++        let state_fetch_started = crate::timing::Instant::now();
+         let mut s_tables: Vec<Vec<[F128; STATE_SIZE]>> = layer_states
+             .par_iter_mut()
+             .map(|instance_states| instance_states.state(q))
+@@ -1371,7 +1371,7 @@ pub fn prove_ragged_multi_deep_chain_walk<Ch: Challenger>(
+ 
+         let mut round_coeffs = Vec::with_capacity(max_w_log);
+         let mut point = Vec::with_capacity(max_w_log);
+-        let sumcheck_started = std::time::Instant::now();
++        let sumcheck_started = crate::timing::Instant::now();
+         for round in 0..max_w_log {
+             // A native coordinate contributes one work item per Boolean
+             // pair; an exhausted instance contributes one analytical item
+@@ -1434,7 +1434,7 @@ pub fn prove_ragged_multi_deep_chain_walk<Ch: Challenger>(
+         }
+         sumcheck_elapsed += sumcheck_started.elapsed();
+ 
+-        let finish_started = std::time::Instant::now();
++        let finish_started = crate::timing::Instant::now();
+         let next_values: Vec<[F128; STATE_SIZE]> =
+             s_tables.iter().map(|instance| instance[0]).collect();
+         let flat_next = next_values
+@@ -2754,7 +2754,7 @@ mod tests {
+             })
+             .collect::<Vec<_>>();
+         let instance_refs = instances.iter().collect::<Vec<_>>();
+-        let started = std::time::Instant::now();
++        let started = crate::timing::Instant::now();
+         let mut challenger = FsLaneChallenger::new(b"deep-chain-ragged-m22-micro");
+         let (proof, terminals) =
+             prove_ragged_multi_deep_chain_walk(&instance_refs, &groups, &mut challenger);
+diff --git a/jetsam_ivc_core/src/deep_chain/c1.rs b/jetsam_ivc_core/src/deep_chain/c1.rs
+index 5f97160..9787625 100644
+--- a/jetsam_ivc_core/src/deep_chain/c1.rs
++++ b/jetsam_ivc_core/src/deep_chain/c1.rs
+@@ -632,8 +632,8 @@ pub fn prove_ragged_deep_chain_walk<C: Challenger>(
+     let max_w_log = *w_logs.iter().max().expect("one C1 walk child");
+ 
+     let timing = std::env::var_os("NOIDH_C1_DEEP_CHAIN_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
+-    let state_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
++    let state_started = crate::timing::Instant::now();
+     let mut layer_states = base_states
+         .par_iter()
+         .map(|&states| RaggedDescendingLayerStates::new(states))
+@@ -652,7 +652,7 @@ pub fn prove_ragged_deep_chain_walk<C: Challenger>(
+     let mut finish_elapsed = std::time::Duration::ZERO;
+ 
+     for layer in (1..=N_ROUNDS).rev() {
+-        let setup_started = std::time::Instant::now();
++        let setup_started = crate::timing::Instant::now();
+         let round = layer - 1;
+         let alpha = channel.sample_f256();
+         let weights = lane_weight_table(alpha, groups.len());
+@@ -684,7 +684,7 @@ pub fn prove_ragged_deep_chain_walk<C: Challenger>(
+         let mut equality_prefix = vec![F256::ONE; groups.len()];
+         setup_elapsed += setup_started.elapsed();
+ 
+-        let state_fetch_started = std::time::Instant::now();
++        let state_fetch_started = crate::timing::Instant::now();
+         let base_layer_states = layer_states
+             .par_iter_mut()
+             .map(|server| server.state(round))
+@@ -696,9 +696,9 @@ pub fn prove_ragged_deep_chain_walk<C: Challenger>(
+         let mut state_scratch = (0..groups.len()).map(|_| Vec::new()).collect::<Vec<_>>();
+         let mut round_coeffs = Vec::with_capacity(max_w_log);
+         let mut point = Vec::with_capacity(max_w_log);
+-        let sumcheck_started = std::time::Instant::now();
++        let sumcheck_started = crate::timing::Instant::now();
+         for coordinate in 0..max_w_log {
+-            let contribution_started = std::time::Instant::now();
++            let contribution_started = crate::timing::Instant::now();
+             let contributions = (0..groups.len())
+                 .into_par_iter()
+                 .map(|child| {
+@@ -752,7 +752,7 @@ pub fn prove_ragged_deep_chain_walk<C: Challenger>(
+             claim = horner(&full, challenge);
+             point.push(challenge);
+             round_coeffs.push(wire);
+-            let fold_started = std::time::Instant::now();
++            let fold_started = crate::timing::Instant::now();
+             if coordinate == 0 {
+                 equality
+                     .par_iter_mut()
+@@ -796,7 +796,7 @@ pub fn prove_ragged_deep_chain_walk<C: Challenger>(
+         }
+         sumcheck_elapsed += sumcheck_started.elapsed();
+ 
+-        let finish_started = std::time::Instant::now();
++        let finish_started = crate::timing::Instant::now();
+         let next_values = states.iter().map(|states| states[0]).collect::<Vec<_>>();
+         channel.observe_f256_slice(
+             &next_values
+@@ -1063,7 +1063,7 @@ mod tests {
+                 values: std::array::from_fn(|_| rng.f256()),
+             })
+             .collect::<Vec<_>>();
+-        let started = std::time::Instant::now();
++        let started = crate::timing::Instant::now();
+         let mut channel = FsLaneChallenger::new_c1(b"genuine-c1-joint-b25-sidecar-micro");
+         let (proof, terminals) = prove_ragged_deep_chain_walk(&references, &groups, &mut channel);
+         eprintln!(
+diff --git a/jetsam_ivc_core/src/deep_chain/relations.rs b/jetsam_ivc_core/src/deep_chain/relations.rs
+index e67a6b1..2191f5e 100644
+--- a/jetsam_ivc_core/src/deep_chain/relations.rs
++++ b/jetsam_ivc_core/src/deep_chain/relations.rs
+@@ -1266,7 +1266,7 @@ mod tests {
+         }
+ 
+         let mut reference_challenger = FsLaneChallenger::new(b"relation-scratch-parity");
+-        let reference_started = std::time::Instant::now();
++        let reference_started = crate::timing::Instant::now();
+         let reference = prove_column_relation_allocating_reference(
+             target,
+             &eq_point,
+@@ -1276,7 +1276,7 @@ mod tests {
+         );
+         let reference_elapsed = reference_started.elapsed();
+         let mut optimized_challenger = FsLaneChallenger::new(b"relation-scratch-parity");
+-        let optimized_started = std::time::Instant::now();
++        let optimized_started = crate::timing::Instant::now();
+         let optimized = prove_column_relation(
+             target,
+             &eq_point,
+diff --git a/jetsam_ivc_core/src/deep_chain/relations/c1.rs b/jetsam_ivc_core/src/deep_chain/relations/c1.rs
+index 121abef..47539fb 100644
+--- a/jetsam_ivc_core/src/deep_chain/relations/c1.rs
++++ b/jetsam_ivc_core/src/deep_chain/relations/c1.rs
+@@ -343,7 +343,7 @@ pub fn prove_column_relation<C: Challenger>(
+     columns: &RelationColumns<'_>,
+     channel: &mut C,
+ ) -> (C1ColumnRelationProof, Vec<F256>, Vec<F256>) {
+-    let timing_started = std::time::Instant::now();
++    let timing_started = crate::timing::Instant::now();
+     let w_log = eq_point.len();
+     let width = 1usize << w_log;
+     let references = distinct_refs(terms);
+@@ -704,7 +704,7 @@ pub fn prove_shift_discharge_pow2<C: Challenger>(
+     shift_log: usize,
+     channel: &mut C,
+ ) -> (C1ShiftDischargeProof, Vec<F256>) {
+-    let timing_started = std::time::Instant::now();
++    let timing_started = crate::timing::Instant::now();
+     let width = column.len();
+     assert!(width.is_power_of_two(), "shift column width");
+     let w_log = width.trailing_zeros() as usize;
+diff --git a/jetsam_ivc_core/src/lib.rs b/jetsam_ivc_core/src/lib.rs
+index 6fe287d..1e09031 100644
+--- a/jetsam_ivc_core/src/lib.rs
++++ b/jetsam_ivc_core/src/lib.rs
+@@ -19,6 +19,7 @@
+ 
+ #![allow(dead_code)]
+ 
++pub(crate) mod timing;
+ pub mod bits;
+ pub mod challenger;
+ pub mod circuit;
+diff --git a/jetsam_ivc_core/src/lincheck.rs b/jetsam_ivc_core/src/lincheck.rs
+index 39c4d22..b444c04 100644
+--- a/jetsam_ivc_core/src/lincheck.rs
++++ b/jetsam_ivc_core/src/lincheck.rs
+@@ -1558,7 +1558,7 @@ fn prove_padded_inner<Ch: Challenger>(
+     //    per-hash circuit walkers compute the same `comb_vec` directly from
+     //    the constraint graph.
+     let t = if trace {
+-        Some(std::time::Instant::now())
++        Some(crate::timing::Instant::now())
+     } else {
+         None
+     };
+@@ -1584,7 +1584,7 @@ fn prove_padded_inner<Ch: Challenger>(
+ 
+     // 3. Partial fold of z at the shared outer half (length-k F128 vector).
+     let t = if trace {
+-        Some(std::time::Instant::now())
++        Some(crate::timing::Instant::now())
+     } else {
+         None
+     };
+@@ -1606,7 +1606,7 @@ fn prove_padded_inner<Ch: Challenger>(
+         None
+     };
+     let t_sumcheck_start = if trace {
+-        Some(std::time::Instant::now())
++        Some(crate::timing::Instant::now())
+     } else {
+         None
+     };
+@@ -2021,7 +2021,7 @@ pub fn verify<Ch: Challenger>(
+     // 2. Build α-batched comb_vec via the circuit's per-block fold (same call
+     //    the prover made — sparse default delegates to the fused row-fold;
+     //    per-hash impls walk the constraint graph directly).
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let mut comb_vec =
+         circuit.fold_alpha_batched_quirky(alpha, x_ab.z_skip, &x_ab.x_inner_rest, k_skip);
+     if trace {
+@@ -2034,7 +2034,7 @@ pub fn verify<Ch: Challenger>(
+     // 3. Replay the multilinear product-sumcheck (inner_rest_len rounds),
+     //    folding comb_vec in lockstep so we end up with the "comb_partial"
+     //    vector of length 2^k_skip. Parallel fold for the early (large) rounds.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     // Constant-wire pin (mirror of prove): β sampled after α, comb gains +β at
+     // the constant column, and the initial target gains +β·1 — the honest
+     // all-ones constant column folds to 1. See docs/const-wire-pin.md.
+@@ -2086,7 +2086,7 @@ pub fn verify<Ch: Challenger>(
+     // 7. Derive output claim value via φ8 Lagrange on z_partial at z_skip.
+     //    Equals ẑ_φ8(z_skip, r_rest, x_outer) when z_partial is honest;
+     //    PCS catches mismatches downstream.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let lambda = lagrange_weights_naive(k_skip, r_inner_skip);
+     let w = inner_product(&lambda, &proof.z_partial);
+     if trace {
+diff --git a/jetsam_ivc_core/src/matrix_claim.rs b/jetsam_ivc_core/src/matrix_claim.rs
+index d0bd762..ea74395 100644
+--- a/jetsam_ivc_core/src/matrix_claim.rs
++++ b/jetsam_ivc_core/src/matrix_claim.rs
+@@ -931,7 +931,7 @@ fn prove_matrix_claim_fold_from_rows<Ch: Challenger>(
+     ch: &mut Ch,
+ ) -> (MatrixFoldProof, MatrixAccClaim) {
+     let timing = std::env::var_os("NOIDH_MATRIX_FOLD_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     let storage = rows.storage_name();
+     let k_log = rows.k_log();
+     let k_skip = rows.k_skip();
+@@ -949,7 +949,7 @@ fn prove_matrix_claim_fold_from_rows<Ch: Challenger>(
+ 
+     // Dense weight/value tables.
+     // v(c) = z_partial[c mod 64]·eq(r_inner_rest)[c div 64].
+-    let tables_started = std::time::Instant::now();
++    let tables_started = crate::timing::Instant::now();
+     let q_tensor = build_eq_table(&fresh.r_inner_rest);
+     let mut v_table = vec![F128::ZERO; k];
+     v_table
+@@ -966,14 +966,14 @@ fn prove_matrix_claim_fold_from_rows<Ch: Challenger>(
+     let tables_ms = tables_started.elapsed().as_millis();
+ 
+     // G_v, G_e: row images of M̂ against v and e_c. Row index y = r + b·k.
+-    let row_images_started = std::time::Instant::now();
++    let row_images_started = crate::timing::Instant::now();
+     let mut g_v = vec![F128::ZERO; 2 * k];
+     let mut g_e = vec![F128::ZERO; 2 * k];
+     rows.fill_row_images(&v_table, &e_c, &mut g_v, &mut g_e);
+     let row_images_ms = row_images_started.elapsed().as_millis();
+ 
+     // Phase-1 weights over y = (r, b): ŵu and γ·gate·eq(p_in^{rb}).
+-    let phase1_weights_started = std::time::Instant::now();
++    let phase1_weights_started = crate::timing::Instant::now();
+     let lambda = lagrange_weights_naive(k_skip, fresh.z_skip);
+     let e_tensor = build_eq_table(&fresh.x_inner_rest);
+     let w_u = build_stacked_u_weights(k_log, k_skip, fresh.alpha, &lambda, &e_tensor);
+@@ -984,7 +984,7 @@ fn prove_matrix_claim_fold_from_rows<Ch: Challenger>(
+     let phase1_weights_ms = phase1_weights_started.elapsed().as_millis();
+ 
+     let target1 = fresh.value + gg * incoming.value;
+-    let phase1_started = std::time::Instant::now();
++    let phase1_started = crate::timing::Instant::now();
+     let (phase1_rounds, rho, claim1, finals1) = run_phase(target1, w_u, g_v, w_in_row, g_e, ch);
+     let phase1_ms = phase1_started.elapsed().as_millis();
+     // finals1 = [ŵu~(ρ), G_v~(ρ), γ·gate·eq~(ρ), G_e~(ρ)].
+@@ -1004,21 +1004,21 @@ fn prove_matrix_claim_fold_from_rows<Ch: Challenger>(
+     // 2k field elements (128 MiB at m22). Matrix rows are canonical and
+     // row-major; retain two sqrt-sized factors and evaluate one weight per
+     // nonempty row instead.
+-    let column_image_started = std::time::Instant::now();
++    let column_image_started = crate::timing::Instant::now();
+     let eq_rho = FactoredEqTable::new(&rho);
+     let h = rows.weighted_column_image(&eq_rho);
+     drop(eq_rho);
+     let column_image_ms = column_image_started.elapsed().as_millis();
+ 
+     // Phase 2 over c: target = G_v~ + δ·gate·G_e~, weight = v + δ·gate·e_c.
+-    let phase2_mix_started = std::time::Instant::now();
++    let phase2_mix_started = crate::timing::Instant::now();
+     let dg = delta * gate_f;
+     let mut w2 = v_table;
+     let first_phase2_coefficients = mix_and_round_coefficients_one_product(&mut w2, &e_c, &h, dg);
+     drop(e_c);
+     let phase2_mix_ms = phase2_mix_started.elapsed().as_millis();
+     let target2 = g_v_val + dg * g_e_val;
+-    let phase2_started = std::time::Instant::now();
++    let phase2_started = crate::timing::Instant::now();
+     let (phase2_rounds, sigma, claim2, finals2) =
+         run_phase_one_product(target2, w2, h, Some(first_phase2_coefficients), ch);
+     let phase2_ms = phase2_started.elapsed().as_millis();
+diff --git a/jetsam_ivc_core/src/matrix_claim/c1.rs b/jetsam_ivc_core/src/matrix_claim/c1.rs
+index d81453f..df246fd 100644
+--- a/jetsam_ivc_core/src/matrix_claim/c1.rs
++++ b/jetsam_ivc_core/src/matrix_claim/c1.rs
+@@ -801,7 +801,7 @@ fn prove_from_rows<Ch: Challenger>(
+     channel: &mut Ch,
+ ) -> (C1MatrixFoldProof, C1MatrixAccClaim) {
+     let timing = std::env::var_os("NOIDH_MATRIX_FOLD_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     let storage = rows.storage_name();
+     let gate_enabled = gate;
+     let k_log = rows.k_log();
+@@ -817,7 +817,7 @@ fn prove_from_rows<Ch: Challenger>(
+     let gamma = channel.sample_f256();
+     let (incoming_row, incoming_column) = incoming.point.split_at(k_log + 1);
+ 
+-    let tables_started = std::time::Instant::now();
++    let tables_started = crate::timing::Instant::now();
+     let rest = build_eq_table(&fresh.r_inner_rest);
+     let low_count = 1usize << k_skip;
+     let mut v_table = vec![F256::ZERO; width];
+@@ -832,13 +832,13 @@ fn prove_from_rows<Ch: Challenger>(
+     let e_c = build_eq_table(incoming_column);
+     let tables_ms = tables_started.elapsed().as_millis();
+ 
+-    let row_images_started = std::time::Instant::now();
++    let row_images_started = crate::timing::Instant::now();
+     let mut g_v = vec![F256::ZERO; 2 * width];
+     let mut g_e = vec![F256::ZERO; 2 * width];
+     rows.fill_row_images_c1(&v_table, &e_c, &mut g_v, &mut g_e);
+     let row_images_ms = row_images_started.elapsed().as_millis();
+ 
+-    let phase1_weights_started = std::time::Instant::now();
++    let phase1_weights_started = crate::timing::Instant::now();
+     let lambda = lagrange_weights(k_skip, fresh.z_skip, 0);
+     let inner = build_eq_table(&fresh.x_inner_rest);
+     let u_base = build_u_base_weights(k_log, k_skip, &lambda, &inner);
+@@ -847,7 +847,7 @@ fn prove_from_rows<Ch: Challenger>(
+     let incoming_stack_point = incoming_row[k_log];
+     let phase1_weights_ms = phase1_weights_started.elapsed().as_millis();
+     let phase1_target = fresh.value + gamma_gate * incoming.value;
+-    let phase1_started = std::time::Instant::now();
++    let phase1_started = crate::timing::Instant::now();
+     let (phase1_rounds, rho, phase1_claim, phase1_finals) = run_phase_stacked(
+         phase1_target,
+         u_base,
+@@ -869,18 +869,18 @@ fn prove_from_rows<Ch: Challenger>(
+     channel.observe_f256(g_e);
+     let delta = channel.sample_f256();
+ 
+-    let column_image_started = std::time::Instant::now();
++    let column_image_started = crate::timing::Instant::now();
+     let equality = FactoredEqTable::new(&rho);
+     let h = rows.weighted_column_image_c1(&equality);
+     let column_image_ms = column_image_started.elapsed().as_millis();
+     let delta_gate = delta * gate;
+     let mut phase2_weights = v_table;
+-    let phase2_mix_started = std::time::Instant::now();
++    let phase2_mix_started = crate::timing::Instant::now();
+     let first_round =
+         mix_and_round_coefficients_one_product(&mut phase2_weights, &e_c, &h, delta_gate);
+     let phase2_mix_ms = phase2_mix_started.elapsed().as_millis();
+     let phase2_target = g_v + delta_gate * g_e;
+-    let phase2_started = std::time::Instant::now();
++    let phase2_started = crate::timing::Instant::now();
+     let (phase2_rounds, sigma, phase2_claim, phase2_finals) =
+         run_phase_one_product(phase2_target, phase2_weights, h, Some(first_round), channel);
+     let phase2_ms = phase2_started.elapsed().as_millis();
+diff --git a/jetsam_ivc_core/src/pcs.rs b/jetsam_ivc_core/src/pcs.rs
+index cccef04..9056ffd 100644
+--- a/jetsam_ivc_core/src/pcs.rs
++++ b/jetsam_ivc_core/src/pcs.rs
+@@ -235,15 +235,15 @@ pub fn open_batch_quirky_direct<Ch: Challenger>(
+     }
+ 
+     let trace = std::env::var("PCS_TRACE").is_ok();
+-    let mut t = std::time::Instant::now();
+-    let lap = move |label: &str, t: &mut std::time::Instant| {
++    let mut t = crate::timing::Instant::now();
++    let lap = move |label: &str, t: &mut crate::timing::Instant| {
+         if trace {
+             eprintln!(
+                 "  [open_batch_quirky] {label}: {:.2} ms",
+                 t.elapsed().as_secs_f64() * 1e3
+             );
+         }
+-        *t = std::time::Instant::now();
++        *t = crate::timing::Instant::now();
+     };
+     if trace {
+         eprintln!("  [open_batch_quirky] claims: {}", claims.len());
+@@ -545,7 +545,7 @@ pub fn verify_opening_batch_quirky_direct_c1<Ch: Challenger>(
+     challenger: &mut Ch,
+ ) -> Result<(), VerifyError> {
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     assert!(!claims.is_empty(), "need at least one C1 claim");
+     let log_length = commitment.params.m - LOG_PACKING;
+     for claim in claims {
+@@ -569,7 +569,7 @@ pub fn verify_opening_batch_quirky_direct_c1<Ch: Challenger>(
+         .fold(F256::ZERO, |sum, (claim, &gamma)| sum + gamma * claim.value);
+     let transcript_micros = total_started.elapsed().as_micros();
+ 
+-    let basefold_started = std::time::Instant::now();
++    let basefold_started = crate::timing::Instant::now();
+     let ntt = crate::ntt::AdditiveNttF128::standard(commitment.params.k_code());
+     let challenges = basefold::verify_c1(
+         target,
+@@ -584,7 +584,7 @@ pub fn verify_opening_batch_quirky_direct_c1<Ch: Challenger>(
+     .map_err(VerifyError::BaseFold)?;
+     let basefold_micros = basefold_started.elapsed().as_micros();
+ 
+-    let final_b_started = std::time::Instant::now();
++    let final_b_started = crate::timing::Instant::now();
+     let eq_eval = |left: &[F256], right: &[F256]| {
+         assert_eq!(left.len(), right.len());
+         left.iter()
+@@ -773,7 +773,7 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
+     challenger: &mut Ch,
+ ) -> BatchOpeningProof {
+     let trace = std::env::var("PCS_TRACE").is_ok();
+-    let t_total = std::time::Instant::now();
++    let t_total = crate::timing::Instant::now();
+ 
+     let combined = compute_combined_basis_and_target(
+         packed_witness,
+@@ -786,7 +786,7 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
+     );
+ 
+     // BaseFold + FRI on the combined claim.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let ntt = crate::ntt::AdditiveNttF128::standard(commitment.params.k_code());
+     if trace {
+         eprintln!(
+@@ -794,7 +794,7 @@ pub fn open_batch_mixed_with_precomputed_s_hat_v<Ch: Challenger>(
+             t.elapsed().as_secs_f64() * 1e3
+         );
+     }
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let bf_proof = basefold::prove_with_precomputed_round0_prime(
+         packed_witness,
+         combined.b_combined,
+@@ -845,7 +845,7 @@ pub fn open_batch_mixed_ligerito_with_precomputed_s_hat_v<Ch: Challenger>(
+     challenger: &mut Ch,
+ ) -> BatchOpeningProofLigerito {
+     let trace = std::env::var("PCS_TRACE").is_ok();
+-    let t_total = std::time::Instant::now();
++    let t_total = crate::timing::Instant::now();
+ 
+     assert_eq!(
+         lig_config.initial_k, commitment.params.log_batch_size,
+@@ -868,7 +868,7 @@ pub fn open_batch_mixed_ligerito_with_precomputed_s_hat_v<Ch: Challenger>(
+         trace,
+     );
+ 
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let ligerito_proof = ligerito::recursive_prover_with_basis_precomputed_round0(
+         lig_config,
+         packed_witness,
+@@ -932,7 +932,7 @@ fn compute_combined_basis_and_target<Ch: Challenger>(
+     challenger.observe_label(b"history-pcs-open-batch-v0");
+ 
+     // 1. Ring-switching for all x_outers.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let (rs_results, gammas_rs): (
+         Vec<(RingSwitchProof, ring_switch::RingSwitchBatchOutput)>,
+         Vec<F128>,
+@@ -962,7 +962,7 @@ fn compute_combined_basis_and_target<Ch: Challenger>(
+     }
+     let gammas_pd: Vec<F128> = (0..n_pd).map(|_| challenger.sample_f128()).collect();
+ 
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     use rayon::prelude::*;
+ 
+     let l = if let Some((_, out)) = rs_results.first() {
+@@ -1315,7 +1315,7 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
+     //    rs_eq_ind alloc). After all RS claims are observed, sample γ_rs —
+     //    matches the prover's `prove_batched_padded_with_precomputed` which
+     //    samples γ_rs at the same transcript point and bakes it into the fold.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let mut rs_outputs = Vec::with_capacity(n_rs);
+     for i in 0..n_rs {
+         let out = ring_switch::verify_succinct(
+@@ -1355,7 +1355,7 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
+     }
+ 
+     // 5. BaseFold verify against combined target.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let ntt = crate::ntt::AdditiveNttF128::standard(commitment.params.k_code());
+     if trace {
+         eprintln!(
+@@ -1363,7 +1363,7 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
+             fmt(t.elapsed().as_secs_f64())
+         );
+     }
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let challenges = basefold::verify(
+         target_combined,
+         &proof.basefold,
+@@ -1385,7 +1385,7 @@ pub fn verify_opening_batch_mixed<Ch: Challenger>(
+     // 6. `final_b` must equal Σ_rs γ_rs · MLE(rs_eq_ind, challenges) + Σ_pd γ_pd ·
+     //    eq_eval(point, challenges). Ring-switched uses the DP24 succinct
+     //    recurrence; packed-direct uses the standard multilinear eq evaluation.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let mut expected_final_b = F128::ZERO;
+     for (out, (g, x_outer)) in rs_outputs.iter().zip(gammas_rs.iter().zip(x_outers.iter())) {
+         expected_final_b +=
+diff --git a/jetsam_ivc_core/src/pcs/basefold.rs b/jetsam_ivc_core/src/pcs/basefold.rs
+index 86af8bd..cdd9920 100644
+--- a/jetsam_ivc_core/src/pcs/basefold.rs
++++ b/jetsam_ivc_core/src/pcs/basefold.rs
+@@ -816,7 +816,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
+     // *_scratch in round 0 from borrowed `a_init`/`initial_codeword`, then
+     // mem::swap promotes scratch → active for subsequent rounds). Skipping
+     // the zero-init saves ~47 ms (≈320 MB streaming write) at m=29.
+-    let t_alloc = std::time::Instant::now();
++    let t_alloc = crate::timing::Instant::now();
+     let mut a_active: Vec<F128> = crate::scratch::take_f128(a_init.len());
+     let mut a_scratch: Vec<F128> = crate::scratch::take_f128(a_init.len());
+     let mut a_len = a_init.len();
+@@ -873,7 +873,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
+     // When `precomputed_round0_prime` is Some, the caller (pcs combine) fused
+     // this with the b_combined materialization caller — skip the redundant
+     // pass.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let (mut cur_u0, mut cur_u2) = if let Some((u_0, u_2)) = precomputed_round0_prime {
+         (u_0, u_2)
+     } else {
+@@ -924,7 +924,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
+         // that pair's contribution to round+1's (u_0, u_2) is accumulated in
+         // the same pass. The final round (half == 1) has no next message, so
+         // it folds the lone pair directly.
+-        let t = std::time::Instant::now();
++        let t = crate::timing::Instant::now();
+         if half >= 2 {
+             let (n0, n2) = a_scratch[..half]
+                 .par_chunks_mut(2)
+@@ -978,7 +978,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
+             // deferring leaves the proof byte-identical.
+             rb_challenges.push(r);
+             if round + 1 == log_batch_size {
+-                let t = std::time::Instant::now();
++                let t = crate::timing::Instant::now();
+                 cw_len =
+                     row_batch_fold_all(initial_codeword, &mut codeword_scratch, &rb_challenges);
+                 std::mem::swap(&mut codeword_active, &mut codeword_scratch);
+@@ -989,7 +989,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
+ 
+                 // Build T2 over the post-row-batch codeword and observe its root.
+                 if !arities.is_empty() {
+-                    let t = std::time::Instant::now();
++                    let t = crate::timing::Instant::now();
+                     let cw_bytes: &[u8] = unsafe {
+                         core::slice::from_raw_parts(
+                             codeword_active.as_ptr() as *const u8,
+@@ -1015,7 +1015,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
+                 &codeword_active[..cw_len]
+             };
+             debug_assert_eq!(current_lanes, 1);
+-            let t = std::time::Instant::now();
++            let t = crate::timing::Instant::now();
+             let fri_round_idx = round - log_batch_size;
+             let layer = k_code - fri_round_idx - 1;
+             cw_len = fri_fold_codeword(cw_src, &mut codeword_scratch, ntt, layer, r);
+@@ -1034,7 +1034,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
+             if rounds_in_epoch == arities[current_epoch] {
+                 let boundary = current_epoch + 1;
+                 if boundary <= num_fri_commits {
+-                    let t = std::time::Instant::now();
++                    let t = crate::timing::Instant::now();
+                     let next_arity = arities[boundary];
+                     let leaf_f128 = 1usize << next_arity;
+                     let n_leaves = cw_len / leaf_f128;
+@@ -1078,7 +1078,7 @@ pub fn prove_with_precomputed_round0_prime<Ch: Challenger>(
+     // --- Grind, then sample query positions and gather per-tree leaf
+     // indices. The grind pins down the transcript state the positions are
+     // drawn from; its soundness contribution is priced into the query table.
+-    let t_queries = std::time::Instant::now();
++    let t_queries = crate::timing::Instant::now();
+     let pow_nonce = challenger.grind_pow(QUERY_GRIND_BITS);
+     let mut queries = Vec::with_capacity(n_queries);
+     let initial_leaf_f128 = num_ntts;
+@@ -1893,7 +1893,7 @@ pub fn verify_c1<Ch: Challenger>(
+     use rayon::prelude::*;
+ 
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     if proof.round_messages.len() != log_msg_len || log_batch_size > log_msg_len {
+         return Err(VerifyError::InvalidProofShape);
+     }
+@@ -1970,7 +1970,7 @@ pub fn verify_c1<Ch: Challenger>(
+     let initial_leaf_f128 = num_ntts;
+     let post_row_batch_leaf_f256 = 1usize << first_arity;
+     let prefix_micros = total_started.elapsed().as_micros();
+-    let queries_started = std::time::Instant::now();
++    let queries_started = crate::timing::Instant::now();
+ 
+     // Query positions are transcript-bound above. Every opening can now be
+     // checked independently through the node's bounded Rayon pool. Collect
+@@ -2104,7 +2104,7 @@ pub fn verify_c1<Ch: Challenger>(
+     }
+     let queries_micros = queries_started.elapsed().as_micros();
+ 
+-    let tail_started = std::time::Instant::now();
++    let tail_started = crate::timing::Instant::now();
+     if let Some((tail_len, tail_cumulative_arity)) = tail_layout {
+         let remaining = log_dim - tail_cumulative_arity;
+         let coset_len = 1usize << remaining;
+diff --git a/jetsam_ivc_core/src/pcs/commit.rs b/jetsam_ivc_core/src/pcs/commit.rs
+index 637635e..4aa1e21 100644
+--- a/jetsam_ivc_core/src/pcs/commit.rs
++++ b/jetsam_ivc_core/src/pcs/commit.rs
+@@ -417,7 +417,7 @@ fn finalize_commit(
+     params: &PcsParams,
+ ) -> (Commitment, ProverData) {
+     let timing = std::env::var_os("NOIDH_COMMIT_TIMING").is_some();
+-    let t_ntt = std::time::Instant::now();
++    let t_ntt = crate::timing::Instant::now();
+     // ---- Interleaved forward additive NTT: 2^log_batch_size independent
+     // sub-NTTs with shared twiddles. Each sub-NTT operates on its lane of the
+     // SoA buffer. Materialize the zero-copy prefix and the first two active
+@@ -437,7 +437,7 @@ fn finalize_commit(
+             t_ntt.elapsed().as_secs_f64() * 1e3
+         );
+     }
+-    let t_merkle = std::time::Instant::now();
++    let t_merkle = crate::timing::Instant::now();
+ 
+     // ---- Merkle commitment: one leaf per codeword position = num_ntts F128.
+     // Zero-copy: cast the codeword Vec<F128> directly to &[u8]. F128 is
+diff --git a/jetsam_ivc_core/src/pcs/ligerito.rs b/jetsam_ivc_core/src/pcs/ligerito.rs
+index c0f31a6..de8c353 100644
+--- a/jetsam_ivc_core/src/pcs/ligerito.rs
++++ b/jetsam_ivc_core/src/pcs/ligerito.rs
+@@ -2800,7 +2800,7 @@ pub fn recursive_prover<Ch: Challenger>(
+     macro_rules! tlog {
+         ($($arg:tt)*) => { if trace { eprintln!($($arg)*); } }
+     }
+-    let t_total = std::time::Instant::now();
++    let t_total = crate::timing::Instant::now();
+     let mut t_commits = std::time::Duration::ZERO;
+     let t_induce = std::time::Duration::ZERO;
+     let t_sumcheck = std::time::Duration::ZERO;
+@@ -2827,7 +2827,7 @@ pub fn recursive_prover<Ch: Challenger>(
+     let log_inv_rate_0 = config.log_inv_rates[0];
+     let log_msg_cols_0 = log_n - initial_k;
+     let ntt_0 = AdditiveNttF128::standard(log_msg_cols_0 + log_inv_rate_0);
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let wtns_0 = ligero_commit(poly, log_msg_cols_0, initial_k, log_inv_rate_0, &ntt_0);
+     let t_l0 = t.elapsed();
+     t_commits += t_l0;
+@@ -2870,7 +2870,7 @@ pub fn recursive_prover_with_l0<Ch: Challenger>(
+     macro_rules! tlog {
+         ($($arg:tt)*) => { if trace { eprintln!($($arg)*); } }
+     }
+-    let t_total = std::time::Instant::now();
++    let t_total = crate::timing::Instant::now();
+     let t_commits = std::time::Duration::ZERO;
+     let t_induce = std::time::Duration::ZERO;
+     let t_sumcheck = std::time::Duration::ZERO;
+@@ -3029,7 +3029,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+     let mut t_intro_glue = std::time::Duration::ZERO;
+     let mut t_ood = std::time::Duration::ZERO;
+ 
+-    let t_total = std::time::Instant::now();
++    let t_total = crate::timing::Instant::now();
+ 
+     challenger.observe_label(b"history-ligerito-basis-v0");
+     challenger.observe_f128(target);
+@@ -3060,7 +3060,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+         |lvl: usize| -> u32 { config.fold_grinding_bits.get(lvl).copied().unwrap_or(0) as u32 };
+     let ood_count = |lvl: usize| -> usize { config.ood_samples.get(lvl).copied().unwrap_or(0) };
+ 
+-    let _t = std::time::Instant::now();
++    let _t = crate::timing::Instant::now();
+     let (mut sc_prover, start_msg) = match first_msg {
+         Some(msg) => SumcheckProver::new_with_first_msg(packed_witness, b_initial, target, msg),
+         None => SumcheckProver::new(packed_witness, b_initial, target),
+@@ -3099,7 +3099,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+     assert!(n1 >= log_num_interleaved_1);
+     let log_msg_cols_1 = n1 - log_num_interleaved_1;
+     let log_inv_rate_1 = config.log_inv_rates[1];
+-    let _t = std::time::Instant::now();
++    let _t = crate::timing::Instant::now();
+     let ntt_1 = AdditiveNttF128::standard(log_msg_cols_1 + log_inv_rate_1);
+     let f1 = sc_prover.f().to_vec();
+     let wtns_1 = ligero_commit(
+@@ -3120,7 +3120,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+     // sumcheck (introduce + glue). Binds the prover to a single codeword of
+     // the interleaved list before any of L0's queries are drawn.
+     {
+-        let _t = std::time::Instant::now();
++        let _t = crate::timing::Instant::now();
+         for _ in 0..ood_count(1) {
+             let z = challenger.sample_f128_vec(n1);
+             // Build eq(z, ·) once and fuse the MLE eval `y = f̂1(z)` into the
+@@ -3152,7 +3152,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+     let num_queries_0 = config.queries[0];
+     let queries_0 = sample_distinct_queries(challenger, l0_block_len, num_queries_0);
+     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
+-    let _t = std::time::Instant::now();
++    let _t = crate::timing::Instant::now();
+     let opened_rows_0: Vec<Vec<F128>> = queries_0.iter().map(|&q| l0_row(q).to_vec()).collect();
+     let merkle_proof_0 = merkle_multi_proof_for(l0_tree, l0_block_len, &queries_0);
+     if trace {
+@@ -3167,7 +3167,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+     // sparse-prefix Fᵀ-NTT path wins; the dispatcher auto-selects it (deeper
+     // levels stay dense).
+     let sks_vks_n1 = eval_sk_at_vks(n1);
+-    let _t = std::time::Instant::now();
++    let _t = crate::timing::Instant::now();
+     let (basis_0_induced, enforced_sum_0) = induce_sumcheck_poly_auto(
+         n1,
+         log_inv_rate_0,
+@@ -3182,7 +3182,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+     }
+ 
+     // Introduce + glue basis_0.
+-    let _t = std::time::Instant::now();
++    let _t = crate::timing::Instant::now();
+     let intro_msg_0 = sc_prover.introduce_new(basis_0_induced, enforced_sum_0);
+     challenger.observe_f128(intro_msg_0.u_0);
+     challenger.observe_f128(intro_msg_0.u_2);
+@@ -3200,7 +3200,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+     for i in 0..r {
+         let k_i = config.recursive_ks[i];
+         let mut level_rs = Vec::with_capacity(k_i);
+-        let _t = std::time::Instant::now();
++        let _t = crate::timing::Instant::now();
+         for j in 0..k_i {
+             // These folds fold level i+1's commitment — fold-challenge
+             // grinding guards its proximity-gap term. Tapered per round:
+@@ -3230,7 +3230,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+             let num_queries_last = config.queries[i + 1];
+             let queries_last =
+                 sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_last);
+-            let _t = std::time::Instant::now();
++            let _t = crate::timing::Instant::now();
+             let opened_rows_last: Vec<Vec<F128>> = queries_last
+                 .iter()
+                 .map(|&q| wtns_prev.row(q).to_vec())
+@@ -3297,7 +3297,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+         assert!(n_next >= log_num_interleaved_next);
+         let log_msg_cols_next = n_next - log_num_interleaved_next;
+         let log_inv_rate_next = config.log_inv_rates[i + 2];
+-        let _t = std::time::Instant::now();
++        let _t = crate::timing::Instant::now();
+         let ntt_next = AdditiveNttF128::standard(log_msg_cols_next + log_inv_rate_next);
+         let f_evals = sc_prover.f().to_vec();
+         let wtns_next = ligero_commit(
+@@ -3316,7 +3316,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+ 
+         // OOD binding for the L_{i+2} commit (same as the L1 block above).
+         {
+-            let _t = std::time::Instant::now();
++            let _t = crate::timing::Instant::now();
+             for _ in 0..ood_count(i + 2) {
+                 let z = challenger.sample_f128_vec(n_next);
+                 let eq_z = build_eq_table(&z);
+@@ -3339,7 +3339,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+         let num_queries_i = config.queries[i + 1];
+         let queries_i = sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_i);
+         let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
+-        let _t = std::time::Instant::now();
++        let _t = crate::timing::Instant::now();
+         let opened_rows_i: Vec<Vec<F128>> = queries_i
+             .iter()
+             .map(|&q| wtns_prev.row(q).to_vec())
+@@ -3355,7 +3355,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+         });
+ 
+         let sks_vks_i = eval_sk_at_vks(n_next);
+-        let _t = std::time::Instant::now();
++        let _t = crate::timing::Instant::now();
+         let (basis_i_induced, enforced_sum_i) = induce_sumcheck_poly(
+             n_next,
+             &sks_vks_i,
+@@ -3368,7 +3368,7 @@ fn recursive_prover_with_basis_impl<Ch: Challenger>(
+             t_induce += _t.elapsed();
+         }
+ 
+-        let _t = std::time::Instant::now();
++        let _t = crate::timing::Instant::now();
+         let intro_msg_i = sc_prover.introduce_new(basis_i_induced, enforced_sum_i);
+         challenger.observe_f128(intro_msg_i.u_0);
+         challenger.observe_f128(intro_msg_i.u_2);
+@@ -3417,7 +3417,7 @@ where
+     let mut t_enforced = std::time::Duration::ZERO;
+     let mut t_residual = std::time::Duration::ZERO;
+     let mut t_evalb = std::time::Duration::ZERO;
+-    let t_start = std::time::Instant::now();
++    let t_start = crate::timing::Instant::now();
+ 
+     let initial_k = config.initial_k;
+     let r = config.recursive_steps;
+@@ -3543,13 +3543,13 @@ where
+     nonce_idx += 1;
+ 
+     let num_queries_0 = config.queries[0];
+-    let _t = std::time::Instant::now();
++    let _t = crate::timing::Instant::now();
+     let queries_0 = sample_distinct_queries(challenger, block_len_0, num_queries_0);
+     if trace {
+         t_sample_q += _t.elapsed();
+     }
+     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
+-    let _t = std::time::Instant::now();
++    let _t = crate::timing::Instant::now();
+     if !verify_level_opens(
+         &proof.initial_root,
+         block_len_0,
+@@ -3568,7 +3568,7 @@ where
+     // residual evaluations are deferred to the final check (succinct path —
+     // see `induce_sumcheck_evaluate_at_residual`).
+     let n1 = log_n - initial_k;
+-    let _t = std::time::Instant::now();
++    let _t = crate::timing::Instant::now();
+     let enforced_sum_0 = induce_sumcheck_enforced_sum(
+         &proof.initial_proof.opened_rows,
+         &r_lane_fold,
+@@ -3681,7 +3681,7 @@ where
+             let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
+             let prev_num_interleaved = 1usize << prev_log_num_interleaved;
+             let num_queries_last = config.queries[i + 1];
+-            let _t = std::time::Instant::now();
++            let _t = crate::timing::Instant::now();
+             let queries_last =
+                 sample_distinct_queries(challenger, prev_block_len, num_queries_last);
+             // Basis-induction challenge for the LAST commitment. Sampled here —
+@@ -3692,7 +3692,7 @@ where
+             if trace {
+                 t_sample_q += _t.elapsed();
+             }
+-            let _t = std::time::Instant::now();
++            let _t = crate::timing::Instant::now();
+             if !verify_level_opens(
+                 &prev_root,
+                 prev_block_len,
+@@ -3741,7 +3741,7 @@ where
+             let yr_len = yr.len();
+             let yr_log_n = n_current;
+ 
+-            let _t = std::time::Instant::now();
++            let _t = crate::timing::Instant::now();
+             let induced_residuals: Vec<Vec<F128>> = level_ctxs
+                 .iter()
+                 .map(|ctx| {
+@@ -3790,7 +3790,7 @@ where
+ 
+             // Batch-evaluate b at all yr positions in one call so the
+             // caller can amortize prefix work (e.g. ring_switch tensor prefix).
+-            let _te = std::time::Instant::now();
++            let _te = crate::timing::Instant::now();
+             let evb_vec = eval_b_residual(&ris, yr_log_n);
+             if trace {
+                 t_evalb += _te.elapsed();
+@@ -3799,7 +3799,7 @@ where
+                 return false;
+             }
+             let mut inner = F128::ZERO;
+-            let _t = std::time::Instant::now();
++            let _t = crate::timing::Instant::now();
+             for y in 0..yr_len {
+                 let mut combined_y = evb_vec[y];
+                 for (k, residual) in induced_residuals.iter().enumerate() {
+@@ -3889,7 +3889,7 @@ where
+         let prev_block_len = 1usize << (prev_log_msg_cols + prev_log_inv_rate);
+         let prev_num_interleaved = 1usize << prev_log_num_interleaved;
+         let num_queries_i = config.queries[i + 1];
+-        let _t = std::time::Instant::now();
++        let _t = crate::timing::Instant::now();
+         let queries_i = sample_distinct_queries(challenger, prev_block_len, num_queries_i);
+         if trace {
+             t_sample_q += _t.elapsed();
+@@ -3900,7 +3900,7 @@ where
+         }
+         let rp = &proof.recursive_proofs[recursive_proof_idx];
+         recursive_proof_idx += 1;
+-        let _t = std::time::Instant::now();
++        let _t = crate::timing::Instant::now();
+         if !verify_level_opens(
+             &prev_root,
+             prev_block_len,
+@@ -3915,7 +3915,7 @@ where
+             t_merkle += _t.elapsed();
+         }
+ 
+-        let _t = std::time::Instant::now();
++        let _t = crate::timing::Instant::now();
+         let enforced_sum_i =
+             induce_sumcheck_enforced_sum(&rp.opened_rows, &level_rs, &queries_i, &alpha_i);
+         if trace {
+@@ -4389,7 +4389,7 @@ fn recursive_prover_inner<Ch: Challenger>(
+     eval_point: &[F128],
+     claimed_value: F128,
+     challenger: &mut Ch,
+-    t_total: std::time::Instant,
++    t_total: crate::timing::Instant,
+     mut t_commits: std::time::Duration,
+     mut t_induce: std::time::Duration,
+     mut t_sumcheck: std::time::Duration,
+@@ -4423,7 +4423,7 @@ fn recursive_prover_inner<Ch: Challenger>(
+     let log_msg_cols_1 = n1 - log_num_interleaved_1;
+     let log_inv_rate_1 = config.log_inv_rates[1];
+     let ntt_1 = AdditiveNttF128::standard(log_msg_cols_1 + log_inv_rate_1);
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let wtns_1 = ligero_commit(
+         &f1,
+         log_msg_cols_1,
+@@ -4440,7 +4440,7 @@ fn recursive_prover_inner<Ch: Challenger>(
+     let num_queries_0 = udr_queries(log_inv_rate_0);
+     let queries_0 = sample_distinct_queries(challenger, wtns_0.block_len, num_queries_0);
+     let alpha_0 = challenger.sample_f128_vec(ceil_log2(num_queries_0));
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let opened_rows_0: Vec<Vec<F128>> = queries_0.iter().map(|&q| wtns_0.row(q).to_vec()).collect();
+     let merkle_proof_0 = merkle_multi_proof_for(&wtns_0.tree, wtns_0.block_len, &queries_0);
+     t_opens += t.elapsed();
+@@ -4451,7 +4451,7 @@ fn recursive_prover_inner<Ch: Challenger>(
+ 
+     // ---- Induce basis from wtns_0 opens ----
+     let sks_vks_n1 = eval_sk_at_vks(n1);
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let (basis_0_induced, enforced_sum_0) = induce_sumcheck_poly_auto(
+         n1,
+         log_inv_rate_0,
+@@ -4465,7 +4465,7 @@ fn recursive_prover_inner<Ch: Challenger>(
+ 
+     // ---- Start sumcheck: f¹ · eq(z[initial_k..], ·) = claimed_value ----
+     let eq_z_residual = build_eq_table(&eval_point[initial_k..]);
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let (mut sc_prover, start_msg) = SumcheckProver::new(f1, eq_z_residual, claimed_value);
+     t_sumcheck += t.elapsed();
+     challenger.observe_f128(start_msg.u_0);
+@@ -4486,7 +4486,7 @@ fn recursive_prover_inner<Ch: Challenger>(
+     for i in 0..r {
+         let k_i = config.recursive_ks[i];
+         let mut level_rs = Vec::with_capacity(k_i);
+-        let t = std::time::Instant::now();
++        let t = crate::timing::Instant::now();
+         for _ in 0..k_i {
+             let ri = challenger.sample_f128();
+             let msg = sc_prover.fold(ri);
+@@ -4550,7 +4550,7 @@ fn recursive_prover_inner<Ch: Challenger>(
+         let log_inv_rate_next = config.log_inv_rates[i + 2];
+         let ntt_next = AdditiveNttF128::standard(log_msg_cols_next + log_inv_rate_next);
+         let f_evals = sc_prover.f().to_vec();
+-        let t = std::time::Instant::now();
++        let t = crate::timing::Instant::now();
+         let wtns_next = ligero_commit(
+             &f_evals,
+             log_msg_cols_next,
+@@ -4569,7 +4569,7 @@ fn recursive_prover_inner<Ch: Challenger>(
+         let num_queries_i = udr_queries(config.log_inv_rates[i + 1]);
+         let queries_i = sample_distinct_queries(challenger, wtns_prev.block_len, num_queries_i);
+         let alpha_i = challenger.sample_f128_vec(ceil_log2(num_queries_i));
+-        let t = std::time::Instant::now();
++        let t = crate::timing::Instant::now();
+         let opened_rows_i: Vec<Vec<F128>> = queries_i
+             .iter()
+             .map(|&q| wtns_prev.row(q).to_vec())
+@@ -5816,7 +5816,7 @@ mod tests {
+         log_inv_rates: Vec<usize>,
+     ) -> usize {
+         use crate::challenger::Challenger;
+-        use std::time::Instant;
++        use crate::timing::Instant;
+         assert_eq!(log_inv_rates.len(), recursive_ks.len() + 1);
+ 
+         // dims sanity: n1 = 16; after k_0=4 → 12; after k_1=3 → 9 → yr = 512 elems.
+diff --git a/jetsam_ivc_core/src/pcs/ring_switch.rs b/jetsam_ivc_core/src/pcs/ring_switch.rs
+index 9bd59b3..9cb5f61 100644
+--- a/jetsam_ivc_core/src/pcs/ring_switch.rs
++++ b/jetsam_ivc_core/src/pcs/ring_switch.rs
+@@ -2096,7 +2096,7 @@ pub fn prove<Ch: Challenger>(
+ 
+     // Suffix is x_outer[1..] (length m-7); first coord becomes the 7th-bit factor.
+     let suffix = &x_outer[1..];
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let suffix_tensor = build_eq_parallel(suffix);
+     if trace {
+         eprintln!(
+@@ -2108,7 +2108,7 @@ pub fn prove<Ch: Challenger>(
+     debug_assert_eq!(suffix_tensor.len(), l);
+ 
+     // Compute and send s_hat_v.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let s_hat_v = fold_1b_rows_naive(packed_witness, &suffix_tensor);
+     if trace {
+         eprintln!(
+@@ -2127,7 +2127,7 @@ pub fn prove<Ch: Challenger>(
+     let sumcheck_claim = inner_product(&s_hat_u, &eq_r_dprime);
+ 
+     // Compute transparent multilinear rs_eq_ind.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let rs_eq_ind = fold_b128_elems(&suffix_tensor, &eq_r_dprime);
+     if trace {
+         eprintln!(
+@@ -2266,7 +2266,7 @@ pub fn prove_batched_padded_with_precomputed<Ch: Challenger>(
+     //    `fold_1b_rows_split`). Tiny test sizes (len not divisible by 16) fall
+     //    back to the materialized tensor + the original multi-fold.
+     let use_split = l.is_multiple_of(16);
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let dense_splits: Vec<(Vec<F128>, Vec<F128>)> = if use_split {
+         dense_suffixes
+             .iter()
+@@ -2309,7 +2309,7 @@ pub fn prove_batched_padded_with_precomputed<Ch: Challenger>(
+     let sparse_needs_fold: Vec<usize> = (0..sparse_suffixes.len())
+         .filter(|&s| !has_precomputed(sparse_to_orig[s]))
+         .collect();
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let mut dense_s_hat_v: Vec<Vec<F128>> = vec![Vec::new(); dense_suffixes.len()];
+     let mut sparse_s_hat_v: Vec<Vec<F128>> = vec![Vec::new(); sparse_suffixes.len()];
+     // Fill precomputed slots first.
+@@ -2377,7 +2377,7 @@ pub fn prove_batched_padded_with_precomputed<Ch: Challenger>(
+     //    (b) Sample γ_rs after all observations (Schwartz-Zippel-sound).
+     //    (c) Per claim: bake γ_k into eq_r_dprime, fold. Output rs_eq_ind
+     //        already has γ_k baked in — pcs combine just adds.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+ 
+     struct ClaimWork {
+         s_hat_v: Vec<F128>,
+@@ -3323,7 +3323,7 @@ mod tests {
+ 
+         let iters = 20;
+         let bench = |f: &dyn Fn()| {
+-            let t = std::time::Instant::now();
++            let t = crate::timing::Instant::now();
+             for _ in 0..iters {
+                 f();
+             }
+diff --git a/jetsam_ivc_core/src/permutation.rs b/jetsam_ivc_core/src/permutation.rs
+index f46413e..2ab3647 100644
+--- a/jetsam_ivc_core/src/permutation.rs
++++ b/jetsam_ivc_core/src/permutation.rs
+@@ -507,14 +507,14 @@ pub fn prove<C: Challenger>(
+ 
+     // Phase timing (set PERM_TRACE=1). `tp` returns ms since the last reset.
+     let trace = std::env::var("PERM_TRACE").is_ok();
+-    let mut t = std::time::Instant::now();
++    let mut t = crate::timing::Instant::now();
+     let mut tp = |label: &str| {
+         if trace {
+             eprintln!(
+                 "  [perm-prove] {label:<14} {:8.3} ms",
+                 t.elapsed().as_secs_f64() * 1e3
+             );
+-            t = std::time::Instant::now();
++            t = crate::timing::Instant::now();
+         }
+     };
+ 
+diff --git a/jetsam_ivc_core/src/timing.rs b/jetsam_ivc_core/src/timing.rs
+new file mode 100644
+index 0000000..918fc25
+--- /dev/null
++++ b/jetsam_ivc_core/src/timing.rs
+@@ -0,0 +1,33 @@
++//! Monotonic clock for instrumentation.
++//!
++//! `wasm32-unknown-unknown` has no clock: `std::time::Instant::now()` panics
++//! inside `std::sys::time::unsupported`, which aborts the verifier. Every use
++//! of `Instant` in this crate is instrumentation whose output is gated behind
++//! an environment variable, so on wasm we substitute a zero-sized stub that
++//! reports zero durations instead of killing the process.
++//!
++//! On every other target this is exactly `std::time::Instant`.
++#[cfg(not(target_arch = "wasm32"))]
++pub(crate) use std::time::Instant;
++
++#[cfg(target_arch = "wasm32")]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Instant;
++
++#[cfg(target_arch = "wasm32")]
++impl Instant {
++    #[inline]
++    pub(crate) fn now() -> Self {
++        Self
++    }
++
++    #[inline]
++    pub(crate) fn elapsed(&self) -> core::time::Duration {
++        core::time::Duration::ZERO
++    }
++
++    #[inline]
++    pub(crate) fn duration_since(&self, _earlier: Self) -> core::time::Duration {
++        core::time::Duration::ZERO
++    }
++}
+diff --git a/jetsam_ivc_core/src/verifier.rs b/jetsam_ivc_core/src/verifier.rs
+index 939e72c..dbdda71 100644
+--- a/jetsam_ivc_core/src/verifier.rs
++++ b/jetsam_ivc_core/src/verifier.rs
+@@ -473,7 +473,7 @@ fn verify_core_inner<Ch: Challenger>(
+     };
+ 
+     // ---- Bind FS transcript to the statement (mirrors prover::prove).
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     crate::proof::bind_statement(challenger, r1cs, commitment);
+     if trace {
+         eprintln!(
+@@ -483,7 +483,7 @@ fn verify_core_inner<Ch: Challenger>(
+     }
+ 
+     // ---- Zerocheck.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let zc_claim =
+         zerocheck::verify(r1cs.m, zerocheck_proof, challenger).map_err(VerifyError::Zerocheck)?;
+     if trace {
+@@ -502,7 +502,7 @@ fn verify_core_inner<Ch: Challenger>(
+     };
+ 
+     // ---- Lincheck. v_a, v_b come from the zerocheck's final â, b̂ evals.
+-    let t = std::time::Instant::now();
++    let t = crate::timing::Instant::now();
+     let lc_claim = lincheck::verify(
+         r1cs.m,
+         r1cs.k_log,
+@@ -967,7 +967,7 @@ fn verify_field_c1_deferred_matrix_inner<Ch: Challenger>(
+     VerifyError,
+ > {
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     if commitment.params.m != shape.m + pcs::LOG_PACKING
+         || commitment.params.log_batch_size + pcs::LOG_PACKING > commitment.params.m
+     {
+@@ -977,11 +977,11 @@ fn verify_field_c1_deferred_matrix_inner<Ch: Challenger>(
+     crate::proof::bind_statement_field_parts_c1(challenger, statement_digest, commitment);
+     let io_claims = crate::public_io::bind_public_io_c1(challenger, spec, io, shape.m);
+     let prefix_micros = total_started.elapsed().as_micros();
+-    let auxiliary_started = std::time::Instant::now();
++    let auxiliary_started = crate::timing::Instant::now();
+     let (auxiliary_claims, auxiliary_c1_claims) = post_commit(commitment, challenger)?;
+     let auxiliary_micros = auxiliary_started.elapsed().as_micros();
+ 
+-    let zerocheck_started = std::time::Instant::now();
++    let zerocheck_started = crate::timing::Instant::now();
+     let zerocheck_claim = zerocheck::field_c1::verify(shape.m, &proof.zerocheck, challenger)
+         .map_err(VerifyError::Zerocheck)?;
+     let zerocheck_micros = zerocheck_started.elapsed().as_micros();
+@@ -991,7 +991,7 @@ fn verify_field_c1_deferred_matrix_inner<Ch: Challenger>(
+         x_inner_rest: zerocheck_claim.mlv_challenges[..inner_rest_len].to_vec(),
+         x_outer: zerocheck_claim.mlv_challenges[inner_rest_len..].to_vec(),
+     };
+-    let lincheck_started = std::time::Instant::now();
++    let lincheck_started = crate::timing::Instant::now();
+     let (lincheck_claim, fresh) = lincheck::c1::verify_deferred(
+         shape.m,
+         shape.k_log,
+@@ -1006,7 +1006,7 @@ fn verify_field_c1_deferred_matrix_inner<Ch: Challenger>(
+     .map_err(VerifyError::Lincheck)?;
+     let lincheck_micros = lincheck_started.elapsed().as_micros();
+ 
+-    let claims_started = std::time::Instant::now();
++    let claims_started = crate::timing::Instant::now();
+     let ab = crate::proof::C1ZClaim {
+         point: lincheck::c1::C1QuirkyPoint {
+             z_skip: lincheck_claim.r_inner_skip,
+@@ -1064,7 +1064,7 @@ fn verify_field_c1_deferred_matrix_inner<Ch: Challenger>(
+         })
+         .collect::<Vec<_>>();
+     let claims_micros = claims_started.elapsed().as_micros();
+-    let pcs_started = std::time::Instant::now();
++    let pcs_started = crate::timing::Instant::now();
+     pcs::verify_opening_batch_quirky_direct_c1(commitment, &refs, &proof.pcs_open, challenger)
+         .map_err(VerifyError::PcsAb)?;
+     let pcs_micros = pcs_started.elapsed().as_micros();
+diff --git a/jetsam_ivc_core/src/zerocheck.rs b/jetsam_ivc_core/src/zerocheck.rs
+index 967ea04..32751a9 100644
+--- a/jetsam_ivc_core/src/zerocheck.rs
++++ b/jetsam_ivc_core/src/zerocheck.rs
+@@ -272,7 +272,7 @@ fn prove_packed_padded_inner<C: Challenger>(
+     // must be in "naive" convention so the verifier doesn't need to know
+     // about this internal optimization; we restore the C_s factor here.
+     let zc_timing = std::env::var_os("NOIDH_ZC_TIMING").is_some();
+-    let t_round1 = std::time::Instant::now();
++    let t_round1 = crate::timing::Instant::now();
+     let ntt_s = AdditiveNttGf8::new(k_skip, F8::ZERO);
+     let ntt_l = AdditiveNttGf8::new(k_skip, F8(1u8 << k_skip));
+     let inv_table = InvNttTableByteSingleGf8::new(&ntt_s, &ntt_l);
+@@ -324,7 +324,7 @@ fn prove_packed_padded_inner<C: Challenger>(
+     // Convention A wrapping: pass `mlv_arg[0] = ONE` so the function's output
+     // `mlv_arg[0] · G(1)` becomes the bare `G(1)` we send on the wire. The
+     // verifier samples ρ_1 after observing this message.
+-    let t_round2 = std::time::Instant::now();
++    let t_round2 = crate::timing::Instant::now();
+     let fold_table = UniSkipFoldTable::new(k_skip, z);
+     let mut mlv_arg = vec![F128::ONE; n_mlv];
+     mlv_arg[1..].copy_from_slice(&r[k_skip + 1..]);
+@@ -345,7 +345,7 @@ fn prove_packed_padded_inner<C: Challenger>(
+             t_round2.elapsed().as_secs_f64() * 1e3
+         );
+     }
+-    let t_tail = std::time::Instant::now();
++    let t_tail = crate::timing::Instant::now();
+     let mut multilinear_msgs = Vec::with_capacity(n_mlv);
+     multilinear_msgs.push((msg_1, msg_inf));
+     challenger.observe_f128(msg_1);
+diff --git a/jetsam_recursive/src/acceptance/history_step/freezer.rs b/jetsam_recursive/src/acceptance/history_step/freezer.rs
+index 89f3996..19889a8 100644
+--- a/jetsam_recursive/src/acceptance/history_step/freezer.rs
++++ b/jetsam_recursive/src/acceptance/history_step/freezer.rs
+@@ -10,7 +10,8 @@
+ //! into the caller's store; the freezer never retains a matrix bank in RAM.
+ 
+ use std::sync::Arc;
+-use std::time::{Duration, Instant};
++use crate::timing::Instant;
++use std::time::Duration;
+ 
+ use jetsam_ivc_core::field_r1cs::FieldR1cs;
+ 
+diff --git a/jetsam_recursive/src/acceptance/history_step/relation.rs b/jetsam_recursive/src/acceptance/history_step/relation.rs
+index c4840b8..7dc4759 100644
+--- a/jetsam_recursive/src/acceptance/history_step/relation.rs
++++ b/jetsam_recursive/src/acceptance/history_step/relation.rs
+@@ -1726,16 +1726,16 @@ fn prepare_history_step_assembly<const TIER: usize>(
+     mode: HistoryStepAssemblyMode,
+ ) -> Result<PreparedHistoryStepAssembly, HistoryStepError> {
+     let timing = std::env::var_os("NOIDH_HISTORY_ASSEMBLY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     let mut stage_started = total_started;
+-    let lap = |label: &str, stage_started: &mut std::time::Instant| {
++    let lap = |label: &str, stage_started: &mut crate::timing::Instant| {
+         if timing {
+             eprintln!(
+                 "[history-assembly B{TIER}] {label}: {:.1} ms",
+                 stage_started.elapsed().as_secs_f64() * 1e3
+             );
+         }
+-        *stage_started = std::time::Instant::now();
++        *stage_started = crate::timing::Instant::now();
+     };
+     let bank = runtime.bank();
+     let PreparedHistoryStepParent {
+@@ -1943,7 +1943,7 @@ fn prepare_history_step_assembly<const TIER: usize>(
+                 stage_started.elapsed().as_secs_f64() * 1e3
+             );
+         }
+-        stage_started = std::time::Instant::now();
++        stage_started = crate::timing::Instant::now();
+     }
+ 
+     let mut accumulated = Vec::with_capacity(HISTORY_STEP_TIER_SLOT_COUNT);
+@@ -2132,7 +2132,7 @@ fn finish_history_step_assembly<const TIER: usize>(
+     end_accumulator: &ChainAccumulator,
+ ) -> Result<HistoryStepAssemblyOutput, HistoryStepError> {
+     let timing = std::env::var_os("NOIDH_HISTORY_ASSEMBLY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     let mut stage_started = total_started;
+     let PreparedHistoryStepAssembly {
+         mode,
+@@ -2163,7 +2163,7 @@ fn finish_history_step_assembly<const TIER: usize>(
+             stage_started.elapsed().as_secs_f64() * 1e3
+         );
+     }
+-    stage_started = std::time::Instant::now();
++    stage_started = crate::timing::Instant::now();
+ 
+     let used = builder.num_wires();
+     let limit = 1usize << shape.m;
+@@ -2194,7 +2194,7 @@ fn finish_history_step_assembly<const TIER: usize>(
+             stage_started.elapsed().as_secs_f64() * 1e3
+         );
+     }
+-    stage_started = std::time::Instant::now();
++    stage_started = crate::timing::Instant::now();
+     let direct_block =
+         finalize_selected_zk_block_region(block_assembly, shape.m).map_err(|source| {
+             HistoryStepError::sidecar(
+@@ -2208,7 +2208,7 @@ fn finish_history_step_assembly<const TIER: usize>(
+             stage_started.elapsed().as_secs_f64() * 1e3
+         );
+     }
+-    stage_started = std::time::Instant::now();
++    stage_started = crate::timing::Instant::now();
+     let preparations = HistoryStepPreparations {
+         recursion: parent_region,
+         direct_block,
+diff --git a/jetsam_recursive/src/acceptance/history_step/wire.rs b/jetsam_recursive/src/acceptance/history_step/wire.rs
+index 632e0c0..f1ccc51 100644
+--- a/jetsam_recursive/src/acceptance/history_step/wire.rs
++++ b/jetsam_recursive/src/acceptance/history_step/wire.rs
+@@ -966,7 +966,7 @@ pub fn audit_history_step_terminal_encodings(
+             formats.reverse();
+         }
+         for (version, bytes) in formats {
+-            let started = std::time::Instant::now();
++            let started = crate::timing::Instant::now();
+             let encoded = encode_terminal_in_format(
+                 std::hint::black_box(runtime),
+                 std::hint::black_box(terminal),
+@@ -976,7 +976,7 @@ pub fn audit_history_step_terminal_encodings(
+             if encoded != *bytes {
+                 return Err(HistoryStepError::WireEncoding);
+             }
+-            let started = std::time::Instant::now();
++            let started = crate::timing::Instant::now();
+             let restored = decode_terminal_in_format(
+                 std::hint::black_box(runtime),
+                 std::hint::black_box(bytes),
+diff --git a/jetsam_recursive/src/lib.rs b/jetsam_recursive/src/lib.rs
+index 5922843..82db25f 100644
+--- a/jetsam_recursive/src/lib.rs
++++ b/jetsam_recursive/src/lib.rs
+@@ -7,6 +7,7 @@
+ //! The only protocol carried by this crate is `HistoryStep`: the current
+ //! block relation and the persisted parent terminal are proved as one unit.
+ 
++pub(crate) mod timing;
+ pub mod acceptance;
+ pub mod accumulator;
+ pub mod region_sidecar;
+diff --git a/jetsam_recursive/src/region_sidecar.rs b/jetsam_recursive/src/region_sidecar.rs
+index 63f03d1..0e361e6 100644
+--- a/jetsam_recursive/src/region_sidecar.rs
++++ b/jetsam_recursive/src/region_sidecar.rs
+@@ -509,7 +509,7 @@ pub(crate) fn verify_c1_duplex_region_walk_deferred_prefix<'a, Ch: Challenger>(
+     challenger: &mut Ch,
+ ) -> Result<C1DuplexRegionVerifierWalkContinuation<'a>, RegionSidecarError> {
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     vk.validate_in_witness(total_vars)?;
+     let validate_micros = total_started.elapsed().as_micros();
+     if proof.version != DUPLEX_REGION_SIDECAR_VERSION {
+@@ -517,7 +517,7 @@ pub(crate) fn verify_c1_duplex_region_walk_deferred_prefix<'a, Ch: Challenger>(
+     }
+     bind_vk(challenger, vk);
+     let bind_micros = total_started.elapsed().as_micros() - validate_micros;
+-    let prefix_started = std::time::Instant::now();
++    let prefix_started = crate::timing::Instant::now();
+     let prefix = verify_c1_duplex_walk_prefix(
+         vk.w_log,
+         &vk.fixed,
+@@ -1174,7 +1174,7 @@ pub(crate) fn verify_c1_merkle_region_walk_deferred_prefix<'a, Ch: Challenger>(
+     challenger: &mut Ch,
+ ) -> Result<C1MerkleRegionVerifierWalkContinuation<'a>, RegionSidecarError> {
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     vk.validate_certified_c1_in_witness(total_vars)?;
+     let validate_micros = total_started.elapsed().as_micros();
+     if proof.version != MERKLE_REGION_SIDECAR_VERSION {
+@@ -1183,7 +1183,7 @@ pub(crate) fn verify_c1_merkle_region_walk_deferred_prefix<'a, Ch: Challenger>(
+     let families = vk.protocol_families();
+     bind_merkle_vk(challenger, vk);
+     let bind_micros = total_started.elapsed().as_micros() - validate_micros;
+-    let prefix_started = std::time::Instant::now();
++    let prefix_started = crate::timing::Instant::now();
+     let prefix = verify_c1_merkle_walk_prefix(
+         vk.w_log,
+         &vk.fixed,
+diff --git a/jetsam_recursive/src/region_sidecar/block.rs b/jetsam_recursive/src/region_sidecar/block.rs
+index 660b330..cb48397 100644
+--- a/jetsam_recursive/src/region_sidecar/block.rs
++++ b/jetsam_recursive/src/region_sidecar/block.rs
+@@ -1084,13 +1084,13 @@ pub(crate) fn verify_c1_block_region_walk_deferred_prefix<'a, Ch: Challenger>(
+     challenger: &mut Ch,
+ ) -> Result<C1BlockRegionVerifierWalkContinuation<'a>, RegionSidecarError> {
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     vk.validate_selected_zk_roles()?;
+     let validate_micros = total_started.elapsed().as_micros();
+     bind_block_vk(challenger, vk);
+     let bind_micros = total_started.elapsed().as_micros() - validate_micros;
+ 
+-    let wallet_a_started = std::time::Instant::now();
++    let wallet_a_started = crate::timing::Instant::now();
+     let wallet_a = verify_c1_walk_a_region_walk_deferred_prefix(
+         vk.wallet_a(),
+         total_vars,
+@@ -1098,7 +1098,7 @@ pub(crate) fn verify_c1_block_region_walk_deferred_prefix<'a, Ch: Challenger>(
+         challenger,
+     )?;
+     let wallet_a_micros = wallet_a_started.elapsed().as_micros();
+-    let meta_a_started = std::time::Instant::now();
++    let meta_a_started = crate::timing::Instant::now();
+     let meta_a = verify_c1_walk_a_region_walk_deferred_prefix(
+         vk.meta_a(),
+         total_vars,
+@@ -1106,7 +1106,7 @@ pub(crate) fn verify_c1_block_region_walk_deferred_prefix<'a, Ch: Challenger>(
+         challenger,
+     )?;
+     let meta_a_micros = meta_a_started.elapsed().as_micros();
+-    let wallet_b_started = std::time::Instant::now();
++    let wallet_b_started = crate::timing::Instant::now();
+     let wallet_b = verify_c1_merkle_region_walk_deferred_prefix(
+         vk.wallet_b(),
+         total_vars,
+@@ -1114,7 +1114,7 @@ pub(crate) fn verify_c1_block_region_walk_deferred_prefix<'a, Ch: Challenger>(
+         challenger,
+     )?;
+     let wallet_b_micros = wallet_b_started.elapsed().as_micros();
+-    let meta_b_started = std::time::Instant::now();
++    let meta_b_started = crate::timing::Instant::now();
+     let meta_b = verify_c1_merkle_region_walk_deferred_prefix(
+         vk.meta_b(),
+         total_vars,
+@@ -1122,7 +1122,7 @@ pub(crate) fn verify_c1_block_region_walk_deferred_prefix<'a, Ch: Challenger>(
+         challenger,
+     )?;
+     let meta_b_micros = meta_b_started.elapsed().as_micros();
+-    let owner_c_started = std::time::Instant::now();
++    let owner_c_started = crate::timing::Instant::now();
+     let owner_c = verify_c1_duplex_region_walk_deferred_prefix(
+         vk.owner_c(),
+         total_vars,
+@@ -1130,7 +1130,7 @@ pub(crate) fn verify_c1_block_region_walk_deferred_prefix<'a, Ch: Challenger>(
+         challenger,
+     )?;
+     let owner_c_micros = owner_c_started.elapsed().as_micros();
+-    let main_c_started = std::time::Instant::now();
++    let main_c_started = crate::timing::Instant::now();
+     let main_c = verify_c1_duplex_region_walk_deferred_prefix(
+         vk.main_c(),
+         total_vars,
+diff --git a/jetsam_recursive/src/region_sidecar/combined_duplex.rs b/jetsam_recursive/src/region_sidecar/combined_duplex.rs
+index 2a6080c..589016f 100644
+--- a/jetsam_recursive/src/region_sidecar/combined_duplex.rs
++++ b/jetsam_recursive/src/region_sidecar/combined_duplex.rs
+@@ -697,7 +697,7 @@ pub(crate) fn verify_c1_combined_duplex_region_walk_deferred_prefix<'a, Ch: Chal
+     challenger: &mut Ch,
+ ) -> Result<C1CombinedDuplexRegionVerifierWalkContinuation<'a>, RegionSidecarError> {
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     let protocol = vk.certified_c1_protocol_in_witness(total_vars)?;
+     let validate_micros = total_started.elapsed().as_micros();
+     if proof.version() != COMBINED_DUPLEX_REGION_SIDECAR_VERSION {
+@@ -705,7 +705,7 @@ pub(crate) fn verify_c1_combined_duplex_region_walk_deferred_prefix<'a, Ch: Chal
+     }
+     bind_combined_duplex_vk(challenger, vk);
+     let bind_micros = total_started.elapsed().as_micros() - validate_micros;
+-    let prefix_started = std::time::Instant::now();
++    let prefix_started = crate::timing::Instant::now();
+     let prefix = verify_c1_duplex_walk_prefix(
+         protocol.w_log,
+         &protocol.fixed,
+diff --git a/jetsam_recursive/src/region_sidecar/joint_c1.rs b/jetsam_recursive/src/region_sidecar/joint_c1.rs
+index 1caf3af..941e0fb 100644
+--- a/jetsam_recursive/src/region_sidecar/joint_c1.rs
++++ b/jetsam_recursive/src/region_sidecar/joint_c1.rs
+@@ -333,15 +333,15 @@ pub(crate) fn prove_joint_c1_region_sidecar<Ch: Challenger>(
+     outer: &mut Ch,
+ ) -> Result<(JointC1RegionSidecarProof, Vec<C1QuirkyDirectClaim>), RegionSidecarError> {
+     let timing = std::env::var_os("NOIDH_C1_JOINT_TIMING").is_some();
+-    let mut stage = std::time::Instant::now();
+-    let lap = |label: &str, stage: &mut std::time::Instant| {
++    let mut stage = crate::timing::Instant::now();
++    let lap = |label: &str, stage: &mut crate::timing::Instant| {
+         if timing {
+             eprintln!(
+                 "[joint-c1-sidecar] {label}: {:.1} ms",
+                 stage.elapsed().as_secs_f64() * 1e3
+             );
+         }
+-        *stage = std::time::Instant::now();
++        *stage = crate::timing::Instant::now();
+     };
+     outer.observe_label(JOINT_C1_TRANSCRIPT_LABEL);
+ 
+@@ -426,7 +426,7 @@ where
+     MakeChild: FnOnce(F256) -> Child,
+ {
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     if proof.version != JOINT_C1_SIDECAR_VERSION {
+         return Err(RegionSidecarError::UnsupportedVersion);
+     }
+@@ -441,7 +441,7 @@ where
+     let seed = outer.sample_f256();
+     let mut child = make_child(seed);
+ 
+-    let block_started = std::time::Instant::now();
++    let block_started = crate::timing::Instant::now();
+     let block_prefix = verify_c1_block_region_walk_deferred_prefix(
+         block_vk,
+         total_vars,
+@@ -459,7 +459,7 @@ where
+         .iter()
+         .map(|group| group.point.len())
+         .collect::<Vec<_>>();
+-    let walk_started = std::time::Instant::now();
++    let walk_started = crate::timing::Instant::now();
+     let terminals = verify_ragged_deep_chain_walk(&w_logs, &groups, &proof.walk, &mut child)
+         .map_err(|_| RegionSidecarError::InvalidProof)?;
+     let walk_micros = walk_started.elapsed().as_micros();
+@@ -472,14 +472,14 @@ where
+         return Err(RegionSidecarError::InvalidProof);
+     }
+ 
+-    let block_finish_started = std::time::Instant::now();
++    let block_finish_started = crate::timing::Instant::now();
+     let mut claims = block_prefix.finish(&block_terminals, &mut child)?;
+     let block_finish_micros = block_finish_started.elapsed().as_micros();
+-    let handoff_started = std::time::Instant::now();
++    let handoff_started = crate::timing::Instant::now();
+     let tail = child.sample_f256();
+     outer.observe_f256(tail);
+     let handoff_micros = handoff_started.elapsed().as_micros();
+-    let link_finish_started = std::time::Instant::now();
++    let link_finish_started = crate::timing::Instant::now();
+     claims.extend(link_prefix.finish(&link_terminals, outer)?);
+     let link_finish_micros = link_finish_started.elapsed().as_micros();
+     if timing {
+diff --git a/jetsam_recursive/src/region_sidecar/link.rs b/jetsam_recursive/src/region_sidecar/link.rs
+index 59ac1b8..a1c81b2 100644
+--- a/jetsam_recursive/src/region_sidecar/link.rs
++++ b/jetsam_recursive/src/region_sidecar/link.rs
+@@ -409,12 +409,12 @@ pub(crate) fn verify_c1_link_region_walk_deferred_prefix<'a, Ch: Challenger>(
+     challenger: &mut Ch,
+ ) -> Result<C1LinkRegionVerifierWalkContinuation<'a>, RegionSidecarError> {
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     vk.validate_roles()?;
+     let validate_micros = total_started.elapsed().as_micros();
+     bind_link_vk(challenger, vk);
+     let bind_micros = total_started.elapsed().as_micros() - validate_micros;
+-    let leaf_started = std::time::Instant::now();
++    let leaf_started = crate::timing::Instant::now();
+     let leaf_a = verify_c1_combined_duplex_region_walk_deferred_prefix(
+         vk.leaf_a(),
+         total_vars,
+@@ -422,7 +422,7 @@ pub(crate) fn verify_c1_link_region_walk_deferred_prefix<'a, Ch: Challenger>(
+         challenger,
+     )?;
+     let leaf_micros = leaf_started.elapsed().as_micros();
+-    let path_started = std::time::Instant::now();
++    let path_started = crate::timing::Instant::now();
+     let path_b = verify_c1_merkle_region_walk_deferred_prefix(
+         vk.path_b(),
+         total_vars,
+@@ -430,7 +430,7 @@ pub(crate) fn verify_c1_link_region_walk_deferred_prefix<'a, Ch: Challenger>(
+         challenger,
+     )?;
+     let path_micros = path_started.elapsed().as_micros();
+-    let recording_started = std::time::Instant::now();
++    let recording_started = crate::timing::Instant::now();
+     let rec_c = verify_c1_recording_duplex_region_walk_deferred_prefix(
+         vk.rec_c(),
+         total_vars,
+diff --git a/jetsam_recursive/src/region_sidecar/recording_duplex.rs b/jetsam_recursive/src/region_sidecar/recording_duplex.rs
+index 6085c86..e3c8b95 100644
+--- a/jetsam_recursive/src/region_sidecar/recording_duplex.rs
++++ b/jetsam_recursive/src/region_sidecar/recording_duplex.rs
+@@ -744,7 +744,7 @@ pub(crate) fn verify_c1_recording_duplex_region_walk_deferred_prefix<'a, Ch: Cha
+     challenger: &mut Ch,
+ ) -> Result<C1RecordingDuplexVerifierWalkContinuation<'a>, RegionSidecarError> {
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     vk.validate_certified_c1_in_witness(total_vars)?;
+     let validate_micros = total_started.elapsed().as_micros();
+     if proof.version() != DUPLEX_REGION_SIDECAR_VERSION
+@@ -756,7 +756,7 @@ pub(crate) fn verify_c1_recording_duplex_region_walk_deferred_prefix<'a, Ch: Cha
+     bind_recording_vk(challenger, vk);
+     bind_recording_selector(challenger, proof.selector());
+     let bind_micros = total_started.elapsed().as_micros() - validate_micros;
+-    let prefix_started = std::time::Instant::now();
++    let prefix_started = crate::timing::Instant::now();
+     let prefix = verify_c1_duplex_walk_prefix(
+         vk.w_log,
+         &vk.fixed,
+diff --git a/jetsam_recursive/src/region_sidecar/walk_a.rs b/jetsam_recursive/src/region_sidecar/walk_a.rs
+index 2279c01..f91555f 100644
+--- a/jetsam_recursive/src/region_sidecar/walk_a.rs
++++ b/jetsam_recursive/src/region_sidecar/walk_a.rs
+@@ -639,7 +639,7 @@ pub(crate) fn verify_c1_walk_a_region_walk_deferred_prefix<'a, Ch: Challenger>(
+     challenger: &mut Ch,
+ ) -> Result<C1WalkARegionVerifierWalkContinuation<'a>, RegionSidecarError> {
+     let timing = std::env::var_os("NOIDH_C1_VERIFY_TIMING").is_some();
+-    let total_started = std::time::Instant::now();
++    let total_started = crate::timing::Instant::now();
+     let protocol = vk.certified_c1_protocol_in_witness(total_vars)?;
+     let validate_micros = total_started.elapsed().as_micros();
+     if proof.version() != WALK_A_REGION_SIDECAR_VERSION {
+@@ -647,7 +647,7 @@ pub(crate) fn verify_c1_walk_a_region_walk_deferred_prefix<'a, Ch: Challenger>(
+     }
+     bind_walk_a_vk(challenger, vk);
+     let bind_micros = total_started.elapsed().as_micros() - validate_micros;
+-    let prefix_started = std::time::Instant::now();
++    let prefix_started = crate::timing::Instant::now();
+     let prefix = verify_c1_walk_a_walk_prefix(
+         protocol.w_log,
+         &protocol.fixed,
+diff --git a/jetsam_recursive/src/timing.rs b/jetsam_recursive/src/timing.rs
+new file mode 100644
+index 0000000..918fc25
+--- /dev/null
++++ b/jetsam_recursive/src/timing.rs
+@@ -0,0 +1,33 @@
++//! Monotonic clock for instrumentation.
++//!
++//! `wasm32-unknown-unknown` has no clock: `std::time::Instant::now()` panics
++//! inside `std::sys::time::unsupported`, which aborts the verifier. Every use
++//! of `Instant` in this crate is instrumentation whose output is gated behind
++//! an environment variable, so on wasm we substitute a zero-sized stub that
++//! reports zero durations instead of killing the process.
++//!
++//! On every other target this is exactly `std::time::Instant`.
++#[cfg(not(target_arch = "wasm32"))]
++pub(crate) use std::time::Instant;
++
++#[cfg(target_arch = "wasm32")]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) struct Instant;
++
++#[cfg(target_arch = "wasm32")]
++impl Instant {
++    #[inline]
++    pub(crate) fn now() -> Self {
++        Self
++    }
++
++    #[inline]
++    pub(crate) fn elapsed(&self) -> core::time::Duration {
++        core::time::Duration::ZERO
++    }
++
++    #[inline]
++    pub(crate) fn duration_since(&self, _earlier: Self) -> core::time::Duration {
++        core::time::Duration::ZERO
++    }
++}

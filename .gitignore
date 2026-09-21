@@ -1,0 +1,13 @@
+/target
+/pkg-web
+/pkg-node
+/jetsam
+/mainnet/jetsam-node-linux-x86_64
+/mainnet/*.raw
+/mainnet/SHA256SUMS
+/mainnet/chain.json
+/mainnet/chain.err
+/testnet
+/assets
+Cargo.lock
+DEV-MESSAGE.md
