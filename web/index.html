@@ -106,6 +106,11 @@ details.env summary::-webkit-details-marker{display:none}
 .stamp dt{color:var(--ink-2)}
 .stamp dd{margin:0;font-family:var(--mono);font-size:13px;word-break:break-all}
 
+.stale{border:3px solid var(--rule);background:var(--caution);padding:22px 24px}
+.stale h2{font-family:var(--serif);font-size:26px;margin:0 0 8px;font-weight:400}
+.stale p{margin:0 0 14px;font-size:14px;line-height:1.6;max-width:56ch}
+.stale .det{font-family:var(--mono);font-size:12px;border-top:1px solid rgba(44,40,31,.3);padding-top:12px}
+
 .takeover{position:absolute;inset:0;border:8px solid var(--fail);background:var(--fail-bg);
   color:#f3e4e2;padding:40px 44px;display:flex;flex-direction:column;justify-content:center}
 .takeover h2{font-family:var(--sans);font-size:40px;letter-spacing:.02em;margin:0 0 14px;
@@ -589,6 +594,27 @@ worker.onmessage = ({ data: m }) => {
       log(`VERIFIED height ${m.height} in ${clk(m.seconds)}`);
       break;
     }
+    case "stale": {
+      // A protocol upgrade changed the proof format. This page is behind; the
+      // chain is not broken, and saying "verification failed" here would be a
+      // false alarm on the one page that must not cry wolf.
+      for (const k in timers) clearInterval(timers[k]);
+      jobRunning = false; $("pulse").hidden = true; $("plate").classList.remove("working");
+      stopLoad(); clockStop(); chip("unknown");
+      label.textContent = "Out of date";
+      paint(`<div class="stale">
+          <h2>This page is out of date</h2>
+          <p>Jetsam has upgraded how proofs are constructed. The chain is fine and nothing here
+             failed a check: these verification parameters were extracted for the previous protocol
+             version and cannot read the new proof format.</p>
+          <p>It needs re-pointing at the current release before it can verify again.</p>
+          <div class="det">proof wire version ${m.saw} · this page understands ${m.expected}</div>
+        </div>
+        <button class="act" id="go" style="margin-top:20px">Try again</button>`);
+      wire();
+      log(`OUT OF DATE: chain proofs are wire version ${m.saw}, this page understands ${m.expected}`);
+      break;
+    }
     case "failed": {
       for (const k in timers) clearInterval(timers[k]);
       jobRunning = false; $("pulse").hidden = true; $("plate").classList.remove("working");
@@ -603,7 +629,9 @@ worker.onmessage = ({ data: m }) => {
               it. The chain is fine. This is what a bad proof looks like.</p>
            <div class="why">deliberate test · ${m.message}</div>`
         : `<h2>VERIFICATION FAILED</h2>
-           <p>This proof did not check out on this machine. Do not rely on any chain data behind it.</p>
+           <p>This proof did not check out on this machine. Do not rely on any chain data behind it.
+              If a protocol upgrade has just happened, this page's parameters may simply be out of
+              date, which is the likelier explanation.</p>
            <div class="why">${m.message}</div>`;
       $("stage").appendChild(t);
       log(`FAILED: ${m.message}`);

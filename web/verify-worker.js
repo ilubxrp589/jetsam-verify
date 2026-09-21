@@ -13,6 +13,10 @@ import init, { initThreadPool, thread_count, Parameters,
 // whose SHA256 is published on the project's GitHub releases page.
 const PIN = "148986844146fe0a4d498bd75f9938c63d1a56dfb5c9265341203c7aa7edb5c2";
 const TX_EPOCH_BLOCKS = 32n;
+// The HistoryStep wire version these parameters were extracted for. A protocol
+// upgrade that changes how proofs are constructed will bump this, and the
+// honest response is "this page is out of date", NOT "verification failed".
+const KNOWN_WIRE_VERSION = 5;
 
 const send  = (m) => self.postMessage(m);
 const hex   = (s) => Uint8Array.from(s.match(/../g).map((b) => parseInt(b, 16)));
@@ -126,6 +130,11 @@ self.onmessage = async (e) => {
     // byte 0 = wire version, bytes 1..9 = height LE. Headers must match the
     // terminal's OWN height, not the chain tip (the tip runs ahead of it).
     const view = new DataView(terminal.buffer, terminal.byteOffset);
+    const wireVersion = terminal[0];
+    if (wireVersion !== KNOWN_WIRE_VERSION) {
+      send({ type: "stale", saw: wireVersion, expected: KNOWN_WIRE_VERSION });
+      return;
+    }
     const height = view.getBigUint64(1, true);
     const anchor = height === 0n ? 0n : ((height - 1n) / TX_EPOCH_BLOCKS) * TX_EPOCH_BLOCKS;
     const [headerHex, epochHex, chain] = await Promise.all([
