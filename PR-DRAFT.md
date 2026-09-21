@@ -6,15 +6,17 @@ WebAssembly, trusting nothing but the SHA256 of your published
 
     height 16501 · proof 853 KB · verified in 3:03 in a browser tab
 
-Live: https://jtmverify.halcyon-names.io · patches attached
+Live: https://jtmverify.halcyon-names.io
+Source and patches: https://github.com/ilubxrp589/jetsam-verify
 
 This targets the public network because, when I started, the only published
 testnet build was `testnet-v1.1.2`, which could not sync the live test chain
 (`unsupported HistoryStep version 5`). The `*-testnet-*` binaries in v1.3.0
 look like they resolve that; I have not retried.
 
-**Against:** `7dad97d` (tag `v1.3.0`). All four verified to apply clean to that
-tag; they also apply to `ffd1eb4` (v1.2.0). Apply with
+**Against:** `7dad97d` (tag `v1.3.0`). Verified against a pristine clone of
+that tag: all four apply, the workspace then passes `cargo check --workspace`,
+and both the native and wasm32 builds succeed. Apply with
 `git apply 0001-*.patch 0002-*.patch 0003-*.patch 0004-*.patch`.
 
 The measurements below were taken on v1.2.0. v1.3.0's changes are in
