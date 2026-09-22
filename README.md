@@ -5,12 +5,12 @@ published hash.
 
 **Live: https://jtmverify.halcyon-names.io**
 
-    height 16501 · proof 853 KB · verified in 3:03 in a browser tab
+    height 17896 · proof 851 KB · verified in 64 s natively, ~3 min in a browser tab
 
-A recursive `HistoryStep` proof means one ~872 KB blob proves the whole chain at
-any height, and the size does not grow as the chain grows. This page fetches
-that blob from an RPC it does not trust, re-derives the proving parameters
-locally, and replays the proof in WebAssembly. Bitcoin SPV trusts miners for
+A recursive `HistoryStep` proof means one ~851 KB blob proves the chain at any
+height, and the size does not grow as the chain grows. This page fetches that
+blob from an RPC it does not trust, re-derives the proving parameters locally,
+and replays the proof in WebAssembly. Bitcoin SPV trusts miners for
 state; Ethereum light clients trust a sync committee; this trusts the SHA256 of
 the published `jetsam-node` release, which anyone can check on the project's
 releases page.
@@ -19,14 +19,27 @@ There is a button on the page that flips one bit of the proof before checking
 it. That is rejected in about four seconds with `Verify(Auxiliary)`, so the
 rejection comes from the cryptography rather than from a parse check.
 
+## Which chain history this covers
+
+Jetsam changed relation at block 17750. A v1.3 proof does not recurse back to
+genesis: it proves forward from the boundary at block 17749, and carries that
+boundary in its public IO. The page rebuilds the boundary from the three
+permanent headers that define it and compares the two, exactly as a node does,
+so a valid proof of a *different* branch at that height is rejected as
+`ForeignRecursionRoot`.
+
+What that does not do is re-prove the history before 17750. That history was
+proved under the previous relation, whose parameters this page does not carry.
+The result stamp says so rather than leaving it implied.
+
 ## What it costs
 
 | | |
 |---|---|
 | first visit, re-deriving the parameters | about 29 minutes, once |
 | stored afterwards (IndexedDB) | about 913 MB |
-| every verification after that | 853 KB and about 3 minutes, at any height |
-| the same work on a native node | 5.3 seconds |
+| every verification after that | 851 KB and about 3 minutes, at any height |
+| the same work natively, one class | 64 seconds including the matrix scan |
 
 Desktop only. The first run peaks near 4.3 GB of memory and needs
 `SharedArrayBuffer`, so it will not complete on a phone.
@@ -50,8 +63,13 @@ You need the upstream source at `./jetsam` with the four patches in `patches/`
 applied. Those patches are what make the verifier cross-compile, and one of
 them is a 3.2x speedup to the matrix scan that helps a native node too.
 
-    git clone --branch v1.3.0 https://github.com/jetsam-chain/jetsam.git jetsam
+    git clone --branch v1.3.1 https://github.com/jetsam-chain/jetsam.git jetsam
     cd jetsam && git apply ../patches/000*.patch && cd ..
+    cargo build --release        # the patches must BUILD, not merely apply
+
+That last line is not a formality. `git apply --check` passes on a patch that
+deletes a file without creating its replacement, because `git diff` omits
+untracked files; only a build against a clean checkout catches it.
 
 Wasm threads need nightly, `build-std`, and the linker flags already in
 `.cargo/config.toml`:
@@ -69,16 +87,29 @@ cargo; it only works passed on the command line or through
 
 ## Assets
 
-The page needs three files extracted from the official release binary, which is
-why nothing here has to be trusted:
+The page needs the runtime metadata and one canonical matrix per proof class,
+all extracted from the official release binary, which is why nothing here has
+to be trusted. `./repoint.sh <tag>` does the whole job: download, check against
+the published `SHA256SUMS`, extract, choose, compress, and print the new pin.
 
-    mainnet/extract.py       metadata + the class-0 canonical matrix
-    mainnet/extract_c01.py   the class-1 canonical matrix
-    mainnet/fetch_chain.py   a live proof and its matching headers
+A v1.3 binary carries **two** parameter packs, one relation for blocks before
+the activation height and one for blocks after it, so "extract the parameters"
+has two answers. `mainnet/extract.py` writes every pack it finds by scanning for
+the shape header rather than a file offset, and `repoint.sh` then picks the one
+whose generation governs the current tip, asking the build the same question a
+node asks:
 
-Download `jetsam-node-linux-x86_64`, check it against the published
-`SHA256SUMS`, then run those. They are deliberately not committed: deriving them
-yourself from the verified binary is the point.
+    ./target/release/print_pins --generation-at 17896      # -> v1.3
+    ./target/release/print_pins mainnet/gen0-history-step.runtime
+
+Assets are deliberately not committed: deriving them yourself from the verified
+binary is the point.
+
+    ./target/release/verify_terminal [rpc-url]
+
+is the acceptance test. It is the native twin of the page (same relation, same
+headers, same checks) and it verifies against a live node, so a pack that is
+merely well-formed but wrong cannot pass it.
 
 ## Serving it
 
@@ -89,7 +120,7 @@ yourself from the verified binary is the point.
   `SharedArrayBuffer`, the engine silently drops to one thread, and the first
   run takes about 95 minutes instead of 29
 - `Content-Encoding: zstd` on `*.zst`, so the browser inflates the matrices
-  natively (3.68 MB to 81.9 MB in about 114 ms) and no JS zstd decoder is needed
+  natively (3.66 MB to 81.5 MB in about 114 ms) and no JS zstd decoder is needed
 - a rewrite from `/pkg-web/` to `/pkg-web/jetsam_verify.js`, because
   wasm-bindgen-rayon's worker imports the package *directory*. Without it the
   thread pool waits forever for `wasm_bindgen_worker_ready` and nothing loads.
@@ -109,6 +140,18 @@ Two levels, and the page labels which one produced a result:
 - **CACHED** reuses parameters this browser authenticated on an earlier visit.
   Still trusts no server, but it does trust the browser's own IndexedDB, which
   is a weaker claim and is shown as such.
+
+The cache is keyed by the pinned digest, so a re-point invalidates it rather
+than silently verifying new proofs against old parameters.
+
+A page pinned to one release will eventually meet a chain that has moved past
+it, and "verification failed" would be a false alarm on the one page that must
+not cry wolf. Upstream distinguishes the two cases itself: `ForeignIoLayout`
+means the frame is a well-formed terminal of *another* relation and the sender
+is not at fault. That, and `WireVersion`, are reported as **out of date**;
+everything else stays a loud failure. The staleness signal is deliberately not
+the terminal's wire-version byte: v1.3 changed the relation while leaving that
+byte at 5, so a page keyed to it would have shown a false alarm.
 
 ## Licence
 

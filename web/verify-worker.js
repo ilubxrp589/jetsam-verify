@@ -9,14 +9,14 @@ import init, { initThreadPool, thread_count, Parameters,
                 scan_matrix, load_cached_matrix } from "./pkg-web/jetsam_verify.js";
 
 // The single constant a user checks against the published release. It is the
-// poseidon2b digest of the runtime metadata embedded in jetsam-node v1.2.0,
-// whose SHA256 is published on the project's GitHub releases page.
-const PIN = "148986844146fe0a4d498bd75f9938c63d1a56dfb5c9265341203c7aa7edb5c2";
-const TX_EPOCH_BLOCKS = 32n;
-// The HistoryStep wire version these parameters were extracted for. A protocol
-// upgrade that changes how proofs are constructed will bump this, and the
-// honest response is "this page is out of date", NOT "verification failed".
-const KNOWN_WIRE_VERSION = 5;
+// poseidon2b digest of the v1.3 runtime metadata embedded in jetsam-node
+// v1.3.1, whose SHA256 is published on the project's GitHub releases page.
+//
+// A v1.3 node carries two parameter packs, because one binary verifies blocks
+// on both sides of the fork. This is the digest of the second one: the
+// relation that governs blocks from the activation height on, which is every
+// block this page will ever be shown.
+const PIN = "99c447656912c9030b2cf893f5bab78b360ad8cfdad73bf668a90d270c54e3c9";
 
 const send  = (m) => self.postMessage(m);
 const hex   = (s) => Uint8Array.from(s.match(/../g).map((b) => parseInt(b, 16)));
@@ -127,30 +127,57 @@ self.onmessage = async (e) => {
       terminal[tamperAt] ^= 0x01;
       send({ type: "tampered", at: tamperAt, total: terminal.length });
     }
-    // byte 0 = wire version, bytes 1..9 = height LE. Headers must match the
-    // terminal's OWN height, not the chain tip (the tip runs ahead of it).
+    // byte 0 = wire version, bytes 1..9 = height LE. Which headers this
+    // relation needs is the relation's business, not the page's, so the
+    // engine is asked rather than guessed at: v1.3 binds a second, older
+    // epoch anchor, and it proves forward from the fork boundary instead of
+    // genesis, which needs three more headers to rebuild that boundary.
     const view = new DataView(terminal.buffer, terminal.byteOffset);
-    const wireVersion = terminal[0];
-    if (wireVersion !== KNOWN_WIRE_VERSION) {
-      send({ type: "stale", saw: wireVersion, expected: KNOWN_WIRE_VERSION });
-      return;
-    }
     const height = view.getBigUint64(1, true);
-    const anchor = height === 0n ? 0n : ((height - 1n) / TX_EPOCH_BLOCKS) * TX_EPOCH_BLOCKS;
-    const [headerHex, epochHex, chain] = await Promise.all([
-      rpc("jetsam_getHeaderByHeight", [Number(height)]),
-      rpc("jetsam_getHeaderByHeight", [Number(anchor)]),
+    const need = JSON.parse(verifier.required_heights_json(height));
+
+    const header = (h) => (h === null || h === undefined)
+      ? Promise.resolve(null)
+      : rpc("jetsam_getHeaderByHeight", [Number(h)]);
+    const [headerHex, epochHex, prevEpochHex, chain] = await Promise.all([
+      header(need.terminal.height),
+      header(need.terminal.epoch_anchor),
+      header(need.terminal.previous_epoch_anchor),
       rpc("jetsam_getChainInfo"),
     ]);
-    send({ type: "chain", height: Number(height), anchor: Number(anchor),
-           tip: chain.height, bytes: terminal.length });
+    // The boundary the v1.3 recursion starts from, rebuilt here from
+    // permanent headers exactly as a node rebuilds it. Nothing about it is
+    // shipped or trusted: the engine compares what it derives against the
+    // root the proof itself carries in its public IO.
+    const [rootHex, rootEpochHex, rootPrevEpochHex] = need.root
+      ? await Promise.all([
+          header(need.root.height),
+          header(need.root.epoch_anchor),
+          header(need.root.previous_epoch_anchor),
+        ])
+      : [null, null, null];
+    send({ type: "chain", height: Number(height), anchor: Number(need.terminal.epoch_anchor),
+           tip: chain.height, bytes: terminal.length,
+           root: need.root ? Number(need.root.height) : null });
 
     // 4. Replay the proof.
     send({ type: "stage", stage: "verify" });
     const t = performance.now();
-    const out = JSON.parse(verifier.verify(terminal, hex(headerHex), hex(epochHex)));
-    send({ type: "verified", ...out, seconds: (performance.now() - t) / 1000, trust,
-           tamper, tamperAt });
+    const b = (h) => (h === null || h === undefined) ? undefined : hex(h);
+    const out = JSON.parse(verifier.verify(
+      terminal, hex(headerHex), hex(epochHex), b(prevEpochHex),
+      b(rootHex), b(rootEpochHex), b(rootPrevEpochHex)));
+    const seconds = (performance.now() - t) / 1000;
+    // Default deny. Only the exact word "verified" is a pass; a status this
+    // page does not recognise is a failure, never a success.
+    if (out.status === "verified") {
+      send({ type: "verified", ...out, seconds, trust, tamper, tamperAt });
+    } else if (out.status === "stale") {
+      send({ type: "stale", reason: out.reason, generation: out.generation, pin: PIN });
+    } else {
+      send({ type: "failed", message: out.reason || `unrecognised result: ${out.status}`,
+             tamper });
+    }
   } catch (err) {
     send({ type: "failed", message: String(err && err.message ? err.message : err), tamper });
   }

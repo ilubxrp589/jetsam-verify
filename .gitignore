@@ -4,6 +4,7 @@
 /jetsam
 /mainnet/jetsam-node-linux-x86_64
 /mainnet/*.raw
+/mainnet/gen*-history-step.runtime
 /mainnet/SHA256SUMS
 /mainnet/chain.json
 /mainnet/chain.err
@@ -11,3 +12,7 @@
 /assets
 Cargo.lock
 DEV-MESSAGE.md
+# Private working notes and ops glue: local paths, a telegram token,
+# and fleet details that do not belong in a public repo.
+HANDOVER.md
+fork-watch.sh

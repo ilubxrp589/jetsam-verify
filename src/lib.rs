@@ -14,14 +14,20 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use jetsam_chain::block_header::block_id;
+use jetsam_chain::consensus::params::{HistoryStepPackGeneration, V1_3_ACTIVATION_HEIGHT};
+use jetsam_chain::consensus::{
+    previous_tx_epoch_anchor_height_for_child, tx_epoch_anchor_height_for_child,
+};
 use jetsam_chain::BlockHeader;
 use jetsam_ivc_core::field_r1cs::CompactFieldR1cs;
 use jetsam_ivc_core::proof::FieldShape;
 use jetsam_poseidon2b::native::poseidon2b_hash_byte_slices;
 use jetsam_recursive::{
-    decode_verify_history_step_terminal, pin_history_step_class_bank, CanonicalHistoryStepClassId,
-    HistoryStepMatrixLease, HistoryStepMatrixSource, HistoryStepMatrixSourceError,
-    HistoryStepRuntime, HistoryStepRuntimeParts, HISTORY_STEP_CLASS_COUNT,
+    decode_verify_history_step_terminal_rooted, pin_history_step_class_bank, ChainAccumulator,
+    CanonicalHistoryStepClassId, HistoryStepError, HistoryStepMatrixLease,
+    HistoryStepMatrixSource, HistoryStepMatrixSourceError, HistoryStepRuntime,
+    HistoryStepRuntimeParts, RecursionRoot, HISTORY_STEP_CLASS_COUNT,
 };
 use wasm_bindgen::prelude::*;
 
@@ -91,7 +97,86 @@ fn decode_metadata(encoded: &[u8], pinned: [u8; 32]) -> Result<Metadata, String>
         .map_err(|e| format!("runtime parts: {e:?}"))?;
     let bank = pin_history_step_class_bank(matrix_digests, &parts)
         .map_err(|e| format!("class bank: {e:?}"))?;
+    // These parameters name the relation they belong to, and a relation says
+    // where its recursion starts. v1.3 proves forward from the activation
+    // boundary rather than from genesis, and the bank has to carry that
+    // height for two separate reasons: the terminal decoder reads it to tell
+    // "a frame of the other generation" apart from "a malformed frame", and
+    // the root check in `verify` compares the carried root against it.
+    let bank = bank.rooted_at_height(recursion_root_height(parts.generation())?);
     Ok(Metadata { bank, parts })
+}
+
+/// Height of the boundary this generation's recursion starts from.
+///
+/// Zero for the relation the chain launched with, whose base is genesis; the
+/// block before the activation height for v1.3. Both are schedule constants
+/// compiled into this build, read exactly the way a node reads them.
+fn recursion_root_height(generation: HistoryStepPackGeneration) -> Result<u64, String> {
+    match generation {
+        HistoryStepPackGeneration::V1 => Ok(0),
+        HistoryStepPackGeneration::V1_3 => V1_3_ACTIVATION_HEIGHT
+            .and_then(|height| height.checked_sub(1))
+            .ok_or_else(|| {
+                "these are the v1.3 parameters, but this build carries no v1.3 activation \
+                 height to root them at"
+                    .to_string()
+            }),
+    }
+}
+
+/// Decode one 212-byte block header, naming which one when it will not.
+fn decode_header(label: &str, bytes: Option<&[u8]>) -> Result<BlockHeader, JsValue> {
+    let bytes = bytes.ok_or_else(|| JsValue::from_str(&format!("{label} was not supplied")))?;
+    BlockHeader::from_bytes(bytes).map_err(|e| JsValue::from_str(&format!("{label}: {e:?}")))
+}
+
+/// Quote a Rust debug string so it can sit inside a JSON string literal.
+fn json_escape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' | '\r' | '\t' => out.push(' '),
+            c if (c as u32) < 0x20 => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The relation a bank belongs to and the boundary its recursion starts from.
+fn schedule_json(bank: &jetsam_recursive::PinnedHistoryStepClassBank) -> String {
+    format!(
+        "{{\"generation\":\"{}\",\"root_height\":{},\"binds_two_epoch_anchors\":{}}}",
+        generation_name(bank.generation()),
+        bank.recursion_root_height(),
+        bank.generation().binds_two_epoch_anchors()
+    )
+}
+
+/// Name a generation the way the page prints it.
+fn generation_name(generation: HistoryStepPackGeneration) -> &'static str {
+    match generation {
+        HistoryStepPackGeneration::V1 => "v1",
+        HistoryStepPackGeneration::V1_3 => "v1.3",
+    }
+}
+
+/// A failed verification is one of two very different things, and the page
+/// must not blur them.
+///
+/// `ForeignIoLayout` and `WireVersion` are upstream's own way of saying "this
+/// frame is well formed, it just belongs to a relation these parameters are
+/// not for" — the sender is not at fault and neither is the chain. For a page
+/// pinned to one release that means exactly one thing: the page is out of
+/// date. Everything else is a proof that did not check out, and stays loud.
+fn is_stale_parameters(error: &HistoryStepError) -> bool {
+    matches!(
+        error,
+        HistoryStepError::ForeignIoLayout { .. } | HistoryStepError::WireVersion
+    )
 }
 
 // --- matrix source --------------------------------------------------------
@@ -282,6 +367,14 @@ impl Parameters {
         format!("{{\"classes\":[{}]}}", classes.join(","))
     }
 
+    /// Which relation these parameters are, and where its recursion starts.
+    /// The page reads this before anything is scanned, so it can say which
+    /// generation it is about to check against.
+    #[wasm_bindgen(getter)]
+    pub fn schedule_json(&self) -> String {
+        schedule_json(&self.bank)
+    }
+
     /// Consume these parameters and the scanned matrices into a verifier.
     pub fn into_verifier(self, matrices: Vec<ScannedMatrix>) -> Result<Verifier, JsValue> {
         let mut map = HashMap::new();
@@ -308,16 +401,77 @@ pub struct Verifier {
 #[wasm_bindgen]
 impl Verifier {
 
-    /// Verify a HistoryStep terminal against its block header and epoch anchor.
+    /// Which relation these parameters are, and where its recursion starts.
+    #[wasm_bindgen(getter)]
+    pub fn schedule_json(&self) -> String {
+        schedule_json(self.runtime.bank())
+    }
+
+    /// The heights this verifier needs headers for, given a terminal's own
+    /// height.
     ///
-    /// The headers must be for the terminal's OWN height (parse it off the
-    /// wire: byte 0 is the version, bytes 1..9 the height, little endian), not
-    /// the chain tip, which typically runs several blocks ahead of it.
+    /// The page fetches these over the untrusted RPC and hands the bytes back
+    /// to [`Verifier::verify`]. The arithmetic lives here, beside the relation
+    /// that defines it, so the page and the relation cannot drift apart: a
+    /// generation that binds two epoch anchors asks for two, and one that
+    /// pins its own base asks for no boundary headers at all.
+    pub fn required_heights_json(&self, terminal_height: u64) -> String {
+        let bank = self.runtime.bank();
+        let binds_two = bank.generation().binds_two_epoch_anchors();
+        let anchors = |height: u64| {
+            let previous = binds_two
+                .then(|| previous_tx_epoch_anchor_height_for_child(height).to_string())
+                .unwrap_or_else(|| "null".to_string());
+            format!(
+                "\"epoch_anchor\":{},\"previous_epoch_anchor\":{previous}",
+                tx_epoch_anchor_height_for_child(height)
+            )
+        };
+        // Root height zero is genesis, which the relation pins itself: there
+        // is no boundary to read off the chain and nothing to fetch.
+        let root_height = bank.recursion_root_height();
+        let root = if root_height == 0 {
+            "null".to_string()
+        } else {
+            format!("{{\"height\":{root_height},{}}}", anchors(root_height))
+        };
+        format!(
+            "{{\"terminal\":{{\"height\":{terminal_height},{}}},\"root\":{root}}}",
+            anchors(terminal_height)
+        )
+    }
+
+    /// Verify a HistoryStep terminal against the branch it belongs to.
+    ///
+    /// `header` and `epoch_header` are for the terminal's OWN height (parse it
+    /// off the wire: byte 0 is the version, bytes 1..9 the height, little
+    /// endian), not the chain tip, which typically runs several blocks ahead.
+    /// Everything else is generation-dependent and named by
+    /// [`Verifier::required_heights_json`]: v1.3 binds a second, older epoch
+    /// anchor, and proves forward from the activation boundary rather than
+    /// genesis, so the three headers at that boundary are needed to rebuild
+    /// the recursion root the proof claims to start from.
+    ///
+    /// # What the root check is and is not
+    ///
+    /// Comparing the carried root to one rebuilt from headers establishes
+    /// that this proof continues the branch those headers describe, and
+    /// rejects a valid proof of a different branch at the same height. It does
+    /// NOT re-prove the history before the boundary: that history was proved
+    /// under the previous relation, whose parameters this page does not carry.
+    ///
+    /// Returns JSON carrying a `status` of `verified`, `stale` or `failed`.
+    /// Anything that is not `verified` is not a verification, and a caller
+    /// that does not check the field is wrong.
     pub fn verify(
         &self,
         terminal: &[u8],
         header: &[u8],
         epoch_header: &[u8],
+        previous_epoch_header: Option<Vec<u8>>,
+        root_header: Option<Vec<u8>>,
+        root_epoch_header: Option<Vec<u8>>,
+        root_previous_epoch_header: Option<Vec<u8>>,
     ) -> Result<String, JsValue> {
         console_error_panic_hook::set_once();
         // Natively the verifier runs on its own rayon lane with a 64 MiB stack.
@@ -327,23 +481,86 @@ impl Verifier {
         // is supplied by -zstack-size in .cargo/config.toml. The contract on
         // this hook is that the caller really does have one.
         jetsam_ivc_core::verifier::set_budgeted_large_stack_worker(true);
-        let header = BlockHeader::from_bytes(header)
-            .map_err(|e| JsValue::from_str(&format!("header: {e:?}")))?;
-        let epoch = BlockHeader::from_bytes(epoch_header)
-            .map_err(|e| JsValue::from_str(&format!("epoch header: {e:?}")))?;
-        let accepted = decode_verify_history_step_terminal(&self.runtime, terminal, &header, &epoch)
-            .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-        Ok(format!(
-            "{{\"height\":{},\"semantic_id\":\"{}\",\"class\":{}}}",
-            accepted.height(),
-            accepted
-                .semantic_id()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>(),
-            accepted.class_id().index()
-        ))
+
+        let generation = self.runtime.bank().generation();
+        let header = decode_header("header", Some(header))?;
+        let epoch = decode_header("epoch header", Some(epoch_header))?;
+        let previous_epoch = match previous_epoch_header.as_deref() {
+            Some(bytes) => Some(decode_header("previous epoch header", Some(bytes))?),
+            None if generation.binds_two_epoch_anchors() => {
+                return Err(JsValue::from_str(
+                    "this relation binds two epoch anchors; the previous one was not supplied",
+                ))
+            }
+            None => None,
+        };
+
+        // Rebuild the boundary this branch starts from, exactly as a node
+        // does: arithmetic over permanent headers, never a shipped constant.
+        let root_height = self.runtime.bank().recursion_root_height();
+        let root = if root_height == 0 {
+            None
+        } else {
+            let boundary = decode_header("boundary header", root_header.as_deref())?;
+            if boundary.height != root_height {
+                return Err(JsValue::from_str(&format!(
+                    "boundary header is height {}, expected {root_height}",
+                    boundary.height
+                )));
+            }
+            let boundary_epoch = decode_header("boundary epoch header", root_epoch_header.as_deref())?;
+            let boundary_previous = match root_previous_epoch_header.as_deref() {
+                Some(bytes) => Some(decode_header("boundary previous epoch header", Some(bytes))?),
+                None if generation.binds_two_epoch_anchors() => {
+                    return Err(JsValue::from_str(
+                        "this relation binds two epoch anchors; the boundary's previous anchor \
+                         was not supplied",
+                    ))
+                }
+                None => None,
+            };
+            Some(RecursionRoot::new(
+                ChainAccumulator::from_canonical_headers(
+                    generation,
+                    &boundary,
+                    &boundary_epoch,
+                    boundary_previous.as_ref(),
+                ),
+                block_id(&boundary),
+            ))
+        };
+
+        match decode_verify_history_step_terminal_rooted(
+            &self.runtime,
+            terminal,
+            &header,
+            &epoch,
+            previous_epoch.as_ref(),
+            root.as_ref(),
+        ) {
+            Ok(accepted) => Ok(format!(
+                "{{\"status\":\"verified\",\"height\":{},\"semantic_id\":\"{}\",\"class\":{},\
+                 \"generation\":\"{}\",\"root_height\":{root_height}}}",
+                accepted.height(),
+                accepted
+                    .semantic_id()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>(),
+                accepted.class_id().index(),
+                generation_name(generation),
+            )),
+            Err(error) => {
+                let status = if is_stale_parameters(&error) { "stale" } else { "failed" };
+                Ok(format!(
+                    "{{\"status\":\"{status}\",\"reason\":\"{}\",\"generation\":\"{}\"}}",
+                    json_escape(&format!("{error:?}")),
+                    generation_name(generation),
+                ))
+            }
+        }
     }
+
 }
 
 

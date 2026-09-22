@@ -105,6 +105,10 @@ details.env summary::-webkit-details-marker{display:none}
 .stamp dl{display:grid;grid-template-columns:130px 1fr;gap:7px 18px;margin:0;font-size:13px}
 .stamp dt{color:var(--ink-2)}
 .stamp dd{margin:0;font-family:var(--mono);font-size:13px;word-break:break-all}
+/* What the stamp above does and does not cover. Set below the verdict, in
+   body text rather than mono, because it is a qualification and not a value. */
+.scope{font-size:13px;line-height:1.6;color:var(--ink-2);max-width:60ch;
+  margin:16px 0 0;padding-left:14px;border-left:2px solid var(--rule)}
 
 .stale{border:3px solid var(--rule);background:var(--caution);padding:22px 24px}
 .stale h2{font-family:var(--serif);font-size:26px;margin:0 0 8px;font-weight:400}
@@ -178,7 +182,7 @@ details.env summary::-webkit-details-marker{display:none}
 
   <div class="mast">
     <h1>Jetsam <span style="color:var(--ink-3)">·</span> local chain-state verifier</h1>
-    <div class="const">v1.2.0 · proof 872 KB · params 16.1 MB once</div>
+    <div class="const">v1.3.1 · proof 873 KB · params 16.2 MB once</div>
   </div>
   <div class="rule-thick"></div>
   <div class="rule-thin"></div>
@@ -399,16 +403,16 @@ function paint(html) {
   painted = true;
 }
 const VOYAGE = `Jetsam is cargo thrown overboard that still proves the voyage. This page takes one
-  proof from a server it does not trust and checks the entire chain here, on this machine.`;
+  proof from a server it does not trust and checks it here, on this machine.`;
 
 function stageReady(cold, cores) {
   label.textContent = cold ? "Consent" : "Ready";
   paint(`
     <p class="voyage">${VOYAGE}</p>
     ${cold ? `<div class="tiles">
-      <div><div class="n">3.68 MB</div><div class="l">parameter set 1<br>~5.7 min once</div></div>
-      <div><div class="n">12.42 MB</div><div class="l">parameter set 2<br>~24.8 min once</div></div>
-      <div><div class="n">872 KB</div><div class="l">the proof itself<br>~5.3 min each time</div></div>
+      <div><div class="n">3.66 MB</div><div class="l">parameter set 1<br>~5.7 min once</div></div>
+      <div><div class="n">12.49 MB</div><div class="l">parameter set 2<br>~24.8 min once</div></div>
+      <div><div class="n">873 KB</div><div class="l">the proof itself<br>~5.3 min each time</div></div>
     </div>
     <p style="font-size:13.5px;color:var(--ink-2);max-width:60ch;margin:0 0 22px;line-height:1.6">
       The first run re-derives the parameters from scratch, and that is what makes the result
@@ -433,10 +437,10 @@ function stageReady(cold, cores) {
 function stagePhases() {
   label.textContent = "Authenticating parameters";
   paint(`
-    <div class="phase" id="p0"><div class="top"><span class="name">Parameter set 1 · m=22 · 3.68 MB</span>
+    <div class="phase" id="p0"><div class="top"><span class="name">Parameter set 1 · m=22 · 3.66 MB</span>
       <span class="state">queued</span></div>
       <div class="meta">—</div><div class="track"><i></i></div></div>
-    <div class="phase" id="p1"><div class="top"><span class="name">Parameter set 2 · m=24 · 12.42 MB</span>
+    <div class="phase" id="p1"><div class="top"><span class="name">Parameter set 2 · m=24 · 12.49 MB</span>
       <span class="state">queued</span></div>
       <div class="meta">—</div><div class="track"><i></i></div></div>
     <p style="font-size:12.5px;color:var(--ink-2);margin:16px 0 0;max-width:58ch;line-height:1.55">
@@ -447,7 +451,7 @@ function stagePhases() {
 function stageVerify() {
   label.textContent = "Replaying proof";
   paint(`
-    <div class="phase run" id="pv"><div class="top"><span class="name">Proof replay · 872 KB</span>
+    <div class="phase run" id="pv"><div class="top"><span class="name">Proof replay · 873 KB</span>
       <span class="state">running</span></div>
       <div class="meta">—</div><div class="track"><i></i></div></div>
     <p style="font-size:13px;color:var(--ink-2);margin-top:18px;max-width:58ch;line-height:1.6">
@@ -554,6 +558,8 @@ worker.onmessage = ({ data: m }) => {
       break;
     case "chain":
       log(`proof for height ${m.height} (tip ${m.tip}), epoch anchor ${m.anchor}, ${(m.bytes/1024).toFixed(0)} KB`);
+      if (m.root !== null && m.root !== undefined)
+        log(`rebuilding the v1.3 boundary at block ${m.root} from its own headers`);
       break;
     case "verified": {
       endPhase("pv", `completed in ${clk(m.seconds)}`);
@@ -585,8 +591,14 @@ worker.onmessage = ({ data: m }) => {
             <dt>Semantic ID</dt><dd>${m.semantic_id}</dd>
             <dt>Proof class</dt><dd>${m.class}</dd>
             <dt>Replay time</dt><dd>${clk(m.seconds)}</dd>
+            <dt>Proved from</dt><dd>${m.root_height ? `block ${m.root_height}` : "genesis"}</dd>
           </dl>
         </div>
+        ${m.root_height ? `<p class="scope">Jetsam changed relation at block ${m.root_height + 1}.
+          This proof covers every block from there to ${m.height}, and it is rooted on a boundary
+          rebuilt here from that block's own headers, so a valid proof of a different branch
+          is rejected. The history before ${m.root_height + 1} was proved under the previous
+          relation, whose parameters this page does not carry.</p>` : ""}
         <button class="act" id="go" style="margin-top:20px">Verify again</button>
         <button class="act ghost" id="fresh">Re-derive from scratch</button>
         <button class="act ghost" id="tamper">Reject a tampered proof</button>`);
@@ -608,11 +620,12 @@ worker.onmessage = ({ data: m }) => {
              failed a check: these verification parameters were extracted for the previous protocol
              version and cannot read the new proof format.</p>
           <p>It needs re-pointing at the current release before it can verify again.</p>
-          <div class="det">proof wire version ${m.saw} · this page understands ${m.expected}</div>
+          <div class="det">the proof is a well-formed terminal of another relation · this page
+            carries the ${m.generation} parameters pinned at ${m.pin.slice(0,16)}…</div>
         </div>
         <button class="act" id="go" style="margin-top:20px">Try again</button>`);
       wire();
-      log(`OUT OF DATE: chain proofs are wire version ${m.saw}, this page understands ${m.expected}`);
+      log(`OUT OF DATE: the chain's proofs belong to another relation; this page carries ${m.generation} · ${m.reason}`);
       break;
     }
     case "failed": {
@@ -630,8 +643,8 @@ worker.onmessage = ({ data: m }) => {
            <div class="why">deliberate test · ${m.message}</div>`
         : `<h2>VERIFICATION FAILED</h2>
            <p>This proof did not check out on this machine. Do not rely on any chain data behind it.
-              If a protocol upgrade has just happened, this page's parameters may simply be out of
-              date, which is the likelier explanation.</p>
+              A proof built for a different protocol version is reported separately, as out of date,
+              so that is not what this is.</p>
            <div class="why">${m.message}</div>`;
       $("stage").appendChild(t);
       log(`FAILED: ${m.message}`);

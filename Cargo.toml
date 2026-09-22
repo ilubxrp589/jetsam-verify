@@ -36,14 +36,6 @@ rayon = "1"
 console_error_panic_hook = "0.1"
 
 [[bin]]
-name = "decode_meta"
-path = "src/bin/decode_meta.rs"
-
-[[bin]]
-name = "load_matrix"
-path = "src/bin/load_matrix.rs"
-
-[[bin]]
 name = "verify_terminal"
 path = "src/bin/verify_terminal.rs"
 
