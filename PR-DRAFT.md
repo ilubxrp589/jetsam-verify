@@ -30,9 +30,15 @@ both generations). The one number I did re-measure post-fork is the class-0
 matrix scan, which patch 0003 speeds up: 61.6 s natively and 7:03 in a
 browser on six threads.
 
-Four changes were needed. **Three are useful to you regardless of browsers**,
-and one of them speeds up your own node startup. Nothing here touches
-consensus, the wire format, the proof system, or any cryptographic constant.
+Four changes were needed. **Three are useful to you regardless of browsers.**
+Nothing here touches consensus, the wire format, the proof system, or any
+cryptographic constant.
+
+An earlier draft claimed 0003 speeds up node startup. It does not, and you
+were right to correct it: `open_canonical` goes through
+`open_build_authenticated` against a seal your pack preflight already
+produced, so a node never runs that scan. It helps your release build and
+anyone re-deriving from scratch, which is this page on a first visit.
 `cargo check --workspace` is clean with all four applied.
 
 ---

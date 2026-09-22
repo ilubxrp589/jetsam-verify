@@ -74,7 +74,15 @@ PCLMULQDQ, AES, GFNI and AVX2.
 
 You need the upstream source at `./jetsam` with the four patches in `patches/`
 applied. Those patches are what make the verifier cross-compile, and one of
-them is a 3.2x speedup to the matrix scan that helps a native node too.
+them is a 3.2x speedup to the matrix scan.
+
+That speedup does **not** help node operators, and an earlier version of this
+file said it did. A node never runs that scan: `open_canonical` opens the
+embedded matrices through `open_build_authenticated`, a seal the pack
+preflight produced at build time, and startup loads a pre-packed image in
+about 430 ms. The scan runs when a release is built, and when someone
+re-derives the parameters from scratch, which is what this page does on a
+first visit. Correction owed to the Jetsam dev.
 
     git clone --branch v1.3.1 https://github.com/jetsam-chain/jetsam.git jetsam
     cd jetsam && git apply ../patches/000*.patch && cd ..
