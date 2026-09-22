@@ -22,12 +22,32 @@ const send  = (m) => self.postMessage(m);
 const hex   = (s) => Uint8Array.from(s.match(/../g).map((b) => parseInt(b, 16)));
 const bytes = async (u) => new Uint8Array(await (await fetch(u)).arrayBuffer());
 
+// Where the proof and headers are fetched from. Same-origin by default; a
+// visitor can point this anywhere, because nothing here is trusted: every byte
+// that arrives is checked by the replay, and a wrong one makes it reject.
+let rpcUrl = "rpc";
+
 async function rpc(method, params = []) {
-  const r = await fetch("rpc", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
+  let r;
+  try {
+    r = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+  } catch {
+    // A network-level failure here is almost always CORS, and the usual cause
+    // is pointing this at a node rather than at a gateway.
+    throw new Error(`could not reach ${rpcUrl}. A browser can only talk to a ` +
+      `CORS-enabled read-only gateway: a Jetsam node refuses every request ` +
+      `that carries an Origin header.`);
+  }
+  if (!r.ok) {
+    throw new Error(r.status === 403
+      ? `${rpcUrl} returned 403, which is what a Jetsam node returns to any ` +
+        `browser request. Point this at a read-only gateway instead.`
+      : `${rpcUrl} returned HTTP ${r.status}`);
+  }
   const j = await r.json();
   if (j.error) throw new Error(`${method}: ${j.error.message}`);
   return j.result;
@@ -83,6 +103,33 @@ self.onmessage = async (e) => {
   }
   if (cmd !== "run") return;
   const tamper = e.data?.tamper === true;
+  // Only http(s) absolute urls, or the same-origin default. Nothing here is
+  // trusted, but the page should not be talked into a javascript: or data: url.
+  const asked = typeof e.data?.rpcUrl === "string" ? e.data.rpcUrl.trim() : "";
+  rpcUrl = "rpc";
+  if (asked) {
+    try {
+      const u = new URL(asked, self.location.href);
+      if (u.protocol !== "http:" && u.protocol !== "https:")
+        throw new Error("only http and https endpoints are accepted");
+      rpcUrl = u.href;
+    } catch (err) {
+      send({ type: "failed", message: `proof source: ${err.message || err}`, tamper });
+      return;
+    }
+  }
+  send({ type: "source", url: rpcUrl, own: rpcUrl !== "rpc" });
+  // Reach the endpoint before committing to ninety seconds of Poseidon. A
+  // typo, a node instead of a gateway, or a gateway without CORS should cost
+  // one request to discover, not a minute and a half.
+  if (rpcUrl !== "rpc") {
+    try {
+      await rpc("jetsam_getChainInfo");
+    } catch (err) {
+      send({ type: "failed", message: String(err && err.message ? err.message : err), tamper });
+      return;
+    }
+  }
 
   let trust = "full";
   try {

@@ -180,9 +180,11 @@ details.env summary::-webkit-details-marker{display:none}
 
 <div class="sheet">
 
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2316140f'/%3E%3Ctext x='16' y='25' font-family='Georgia,Times New Roman,serif' font-size='25' fill='%23efe8d8' text-anchor='middle'%3EJ%3C/text%3E%3C/svg%3E">
+
   <div class="mast">
     <h1>Jetsam <span style="color:var(--ink-3)">·</span> local chain-state verifier</h1>
-    <div class="const">v1.3.1 · proof 873 KB · params 16.2 MB once</div>
+    <div class="const">v1.3.1 · proof ~853 KB · params 16.2 MB once</div>
   </div>
   <div class="rule-thick"></div>
   <div class="rule-thin"></div>
@@ -241,6 +243,23 @@ details.env summary::-webkit-details-marker{display:none}
           border:1px solid var(--rule);padding:5px 10px;cursor:pointer;color:var(--ink)">Clear storage</button>
       </div>
 
+      <div class="meter" id="srcwrap">
+        <div class="sc">Proof source</div>
+        <div class="row" style="margin-top:8px"><span id="srcval">this site's read-only gateway</span></div>
+        <input id="srcurl" type="url" spellcheck="false" autocomplete="off"
+          placeholder="https://your-gateway.example/rpc"
+          style="width:100%;margin-top:9px;font-family:var(--mono);font-size:11.5px;padding:6px 7px;
+            background:var(--paper);border:1px solid var(--rule);color:var(--ink)">
+        <div class="hint" id="srchint">Paste your own endpoint if you would rather not take ours on
+          faith. It changes nothing about the result: a wrong byte from any source makes the proof
+          reject, which is the whole point.</div>
+        <div class="hint" style="margin-top:7px">It has to be a read-only gateway, not a node. A
+          Jetsam node returns <b>403</b> to any request carrying an <span class="k">Origin</span>
+          header, before it looks at the method, so that a web page can never reach a wallet through
+          a loopback port. <a href="https://github.com/ilubxrp589/jetsam-verify/blob/master/rpc-proxy.mjs"
+          target="_blank" rel="noopener">rpc-proxy.mjs</a> is one you can run.</div>
+      </div>
+
       <div class="meter">
         <div class="sc">Machine load</div>
         <canvas id="spark" width="640" height="92"></canvas>
@@ -290,8 +309,29 @@ const log = (m) => {
   if (DIAG) fetch("log", { method: "POST", body: `+${((performance.now()-T0)/1000).toFixed(0)}s ${m}` })
     .catch(() => {}); };
 
-// Measured on a 6-core desktop. Shown as expectations, never as completion.
-const EXPECT = { 0: 341, 1: 1490, verify: 319 };
+// Measured on this page after the v1.3 fork, at 6 worker threads. The replay
+// is the mean of three runs (2:23, 2:05, 2:08); the two scans are single runs
+// on a machine that was also running a heavy job, so they read high if
+// anything. The pre-fork numbers are not carried over, because both the
+// relation and the matrices changed at the fork and the old replay estimate
+// was out by well over a factor of two.
+//
+// Shown as expectations, never as completion.
+const EXPECT_THREADS = 6;
+// `metadata` is one Poseidon sponge over the 2.2 MB release metadata. It is
+// sequential by construction, so unlike the scans it does not shrink on more
+// threads, and it is re-run every single time: it is the step that checks the
+// parameters against the published digest, which is the one thing this page
+// promises never to take on trust.
+const EXPECT = { 0: 423, 1: 1755, verify: 132, metadata: 89 };
+// Threads this visitor actually got, once the engine has reported them.
+let engineThreads = EXPECT_THREADS;
+// The matrix scan is the part that parallelises (patch 0003 hashes spans
+// across the pool), so it is worth scaling to this machine. The replay is
+// largely sequential recursion and is deliberately NOT scaled: pretending it
+// halves on twice the threads would be a worse estimate than the flat one.
+const scanExpect = (base) =>
+  Math.round(base * EXPECT_THREADS / Math.max(1, engineThreads));
 const clk = (s) => `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
 
 /* Run clock. Digits changing IS the animation. It times the RUN, not the page
@@ -392,6 +432,7 @@ const stage = $("stagebody"), label = $("stagelabel");
 let painted = false;
 let jobRunning = false;
 let tamperMode = false;
+let rpcUrl = null;   // null = this site's same-origin gateway
 addEventListener("beforeunload", (e) => {
   if (!jobRunning) return;
   e.preventDefault();          // a scan in flight cannot be resumed
@@ -410,9 +451,9 @@ function stageReady(cold, cores) {
   paint(`
     <p class="voyage">${VOYAGE}</p>
     ${cold ? `<div class="tiles">
-      <div><div class="n">3.66 MB</div><div class="l">parameter set 1<br>~5.7 min once</div></div>
-      <div><div class="n">12.49 MB</div><div class="l">parameter set 2<br>~24.8 min once</div></div>
-      <div><div class="n">873 KB</div><div class="l">the proof itself<br>~5.3 min each time</div></div>
+      <div><div class="n">3.66 MB</div><div class="l">parameter set 1<br>~7 min once</div></div>
+      <div><div class="n">12.49 MB</div><div class="l">parameter set 2<br>~29 min once</div></div>
+      <div><div class="n">~853 KB</div><div class="l">the proof itself<br>~2 min each time</div></div>
     </div>
     <p style="font-size:13.5px;color:var(--ink-2);max-width:60ch;margin:0 0 22px;line-height:1.6">
       The first run re-derives the parameters from scratch, and that is what makes the result
@@ -437,6 +478,9 @@ function stageReady(cold, cores) {
 function stagePhases() {
   label.textContent = "Authenticating parameters";
   paint(`
+    <div class="phase" id="pm"><div class="top"><span class="name">Release digest · 2.2 MB</span>
+      <span class="state">queued</span></div>
+      <div class="meta">—</div><div class="track"><i></i></div></div>
     <div class="phase" id="p0"><div class="top"><span class="name">Parameter set 1 · m=22 · 3.66 MB</span>
       <span class="state">queued</span></div>
       <div class="meta">—</div><div class="track"><i></i></div></div>
@@ -451,7 +495,7 @@ function stagePhases() {
 function stageVerify() {
   label.textContent = "Replaying proof";
   paint(`
-    <div class="phase run" id="pv"><div class="top"><span class="name">Proof replay · 873 KB</span>
+    <div class="phase run" id="pv"><div class="top"><span class="name">Proof replay</span>
       <span class="state">running</span></div>
       <div class="meta">—</div><div class="track"><i></i></div></div>
     <p style="font-size:13px;color:var(--ink-2);margin-top:18px;max-width:58ch;line-height:1.6">
@@ -471,8 +515,8 @@ function runPhase(id, expect) {
     const s = (performance.now() - t0) / 1000;
     el.querySelector(".track i").style.width = `${Math.min(100, 100 * s / expect)}%`;
     el.querySelector(".meta").textContent = s < expect
-      ? `elapsed ${clk(s)} · about ${clk(expect - s)} remaining (measured average ${clk(expect)})`
-      : `elapsed ${clk(s)} · past the ${clk(expect)} average, still working`;
+      ? `elapsed ${clk(s)} · about ${clk(expect - s)} remaining (estimate ${clk(expect)})`
+      : `elapsed ${clk(s)} · past the ${clk(expect)} estimate, still working`;
   }, 250);
 }
 function endPhase(id, text) {
@@ -491,8 +535,9 @@ function wire() {
   const go = $("go"), fresh = $("fresh");
   if (go) go.onclick = () => {
     go.disabled = true; tamperMode = false; stagePhases(); chip("unknown");
+    rpcUrl = ($("srcurl")?.value || "").trim() || null;
     jobRunning = true; $("pulse").hidden = false; startLoad(); clockStart();
-    worker.postMessage({ type: "run" });
+    worker.postMessage({ type: "run", rpcUrl });
   };
   const tam = $("tamper");
   if (tam) tam.onclick = () => {
@@ -500,7 +545,7 @@ function wire() {
     if (go) { go.disabled = true; go.textContent = "Working…"; }
     stagePhases(); chip("unknown");
     jobRunning = true; $("pulse").hidden = false; startLoad(); clockStart();
-    worker.postMessage({ type: "run", tamper: true });
+    worker.postMessage({ type: "run", tamper: true, rpcUrl });
   };
   if (fresh) fresh.onclick = () => {
     indexedDB.deleteDatabase("jetsam-verify");
@@ -529,11 +574,18 @@ worker.onmessage = ({ data: m }) => {
       log(`ready · ${m.cores} cores · parameters ${m.cached >= 2 ? "already verified on this device" : "not yet verified here"}`);
       break;
     }
-    case "engine": log(`engine up · ${m.threads} worker threads`); break;
+    case "engine":
+      engineThreads = m.threads || EXPECT_THREADS;
+      log(`engine up · ${m.threads} worker threads`);
+      runPhase("pm", EXPECT.metadata);
+      break;
     case "tampered":
       log(`DELIBERATE TEST: flipped one bit at byte ${m.at} of ${m.total} in the proof`);
       break;
-    case "metadata": log(`parameters authenticated against ${m.pin.slice(0,16)}…`); break;
+    case "metadata":
+      endPhase("pm", `matched ${m.pin.slice(0, 16)}…`);
+      log(`parameters authenticated against ${m.pin.slice(0,16)}…`);
+      break;
     case "matrix": {
       const id = `p${m.cls}`;
       if (m.mode === "cached") {
@@ -542,7 +594,7 @@ worker.onmessage = ({ data: m }) => {
       } else if (m.mode === "scanning") {
         // the plate crawls only while a real re-derivation is under way
         $("plate").classList.add("working");
-        runPhase(id, EXPECT[m.cls]);
+        runPhase(id, scanExpect(EXPECT[m.cls]));
         log(`matrix ${m.cls+1}: re-deriving from scratch (m=${m.m})`);
       } else {
         $("plate").classList.remove("working");
@@ -555,6 +607,10 @@ worker.onmessage = ({ data: m }) => {
     case "stage":
       if (m.stage === "fetch") { label.textContent = "Fetching proof"; log("fetching live proof…"); }
       if (m.stage === "verify") { stageVerify(); runPhase("pv", EXPECT.verify); }
+      break;
+    case "source":
+      $("srcval").textContent = m.own ? m.url : "this site's read-only gateway";
+      if (m.own) log(`proof source: ${m.url} (supplied by you, not by this page)`);
       break;
     case "chain":
       log(`proof for height ${m.height} (tip ${m.tip}), epoch anchor ${m.anchor}, ${(m.bytes/1024).toFixed(0)} KB`);
@@ -664,7 +720,7 @@ $("clear").onclick = async () => {
   const mb = (usage / 1048576).toFixed(0);
   if (!confirm(`Delete ${mb} MB of verified parameters?\n\n` +
       `This frees the space, but the next verification has to re-derive them from scratch, ` +
-      `about 29 minutes. The proof itself is unaffected.`)) return;
+      `about 36 minutes at six threads. The proof itself is unaffected.`)) return;
   indexedDB.deleteDatabase("jetsam-verify");
   log(`cleared ${mb} MB of stored parameters, next run re-derives them`);
   setTimeout(() => { storage(); stageReady(true); chip("unknown"); }, 400);

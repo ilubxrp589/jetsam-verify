@@ -5,9 +5,9 @@ published hash.
 
 **Live: https://jtmverify.halcyon-names.io**
 
-    height 17896 · proof 851 KB · verified in 64 s natively, ~3 min in a browser tab
+    height 17973 · proof ~853 KB · verified in 2:08 in a browser tab, 64 s natively
 
-A recursive `HistoryStep` proof means one ~851 KB blob proves the chain at any
+A recursive `HistoryStep` proof means one ~853 KB blob proves the chain at any
 height, and the size does not grow as the chain grows. This page fetches that
 blob from an RPC it does not trust, re-derives the proving parameters locally,
 and replays the proof in WebAssembly. Bitcoin SPV trusts miners for
@@ -36,10 +36,15 @@ The result stamp says so rather than leaving it implied.
 
 | | |
 |---|---|
-| first visit, re-deriving the parameters | about 29 minutes, once |
-| stored afterwards (IndexedDB) | about 913 MB |
-| every verification after that | 851 KB and about 3 minutes, at any height |
+| first visit, re-deriving the parameters | about 36 minutes at six threads, once |
+| stored afterwards (IndexedDB) | 913 MB, as 171 + 742 |
+| every verification after that | ~853 KB and about two minutes, at any height |
 | the same work natively, one class | 64 seconds including the matrix scan |
+
+Measured at six worker threads on a machine that was also busy, so the scans
+read high if anything; the replay figure is the mean of three runs. The
+pre-fork numbers are not carried over, since the relation and the matrices
+both changed and the old replay estimate was out by more than a factor of two.
 
 Desktop only. The first run peaks near 4.3 GB of memory and needs
 `SharedArrayBuffer`, so it will not complete on a phone.
@@ -130,6 +135,27 @@ allowlist** of five methods. Do not point a public page straight at a node:
 a node's RPC surface includes `jetsam_walletSend` and `jetsam_walletConsolidate`.
 Batch requests are refused outright, since an array could otherwise smuggle a
 denied method past a naive single-method check.
+
+It answers cross-origin callers, so the page can be pointed at someone else's
+copy of it. `ALLOW_ORIGIN` pins that to one page; the default is open, since
+every method it allows is read-only and already public. It sets no
+`Cross-Origin-Resource-Policy`: a CORS-approved fetch already satisfies
+`COEP: require-corp`, and adding one produced a second, conflicting header
+wherever a reverse proxy sets `same-origin` already.
+
+## Bringing your own proof source
+
+The page takes an endpoint, because "we do not trust the server" is easier to
+believe when you pick the server. It changes nothing about the result: a wrong
+byte from any source makes the replay reject, which is the entire design.
+
+It has to be a **gateway, not a node**. A Jetsam node returns a static `403` to
+any request carrying an `Origin` header, before JSON-RPC dispatch, so that a
+web page cannot reach a wallet through a loopback listener
+(`jetsam_rpc/src/server.rs`). That is the right call, and it means no browser
+will ever talk to a node directly, whoever runs it. The page says so, and a
+custom endpoint is probed with one request before the ninety-second digest
+starts, so a typo costs a second rather than a minute and a half.
 
 ## Trust, stated precisely
 

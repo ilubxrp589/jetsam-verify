@@ -37,13 +37,40 @@ setInterval(() => {
   for (const [ip, b] of buckets) if (now - b.start > RATE_MS) buckets.delete(ip);
 }, RATE_MS).unref();
 
+// A Jetsam node refuses every browser request outright: the RPC server
+// returns a static 403 to anything carrying an Origin header, before JSON-RPC
+// dispatch, so that a web page cannot reach a wallet through a loopback
+// listener. That is the right call, and it means a browser can only ever
+// reach the chain through a non-browser proxy like this one. So if this
+// gateway is to be usable by a page served from somewhere else, it has to say
+// so in CORS terms itself.
+//
+// Every method this gateway allows is read-only and already public, so the
+// default is open. Set ALLOW_ORIGIN to pin it to one page instead.
+const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "*";
+const cors = (res) => {
+  res.setHeader("access-control-allow-origin", ALLOW_ORIGIN);
+  res.setHeader("access-control-allow-headers", "content-type");
+  res.setHeader("access-control-allow-methods", "POST, OPTIONS");
+  res.setHeader("access-control-max-age", "86400");
+  if (ALLOW_ORIGIN !== "*") res.setHeader("vary", "origin");
+  // Deliberately no Cross-Origin-Resource-Policy. COEP: require-corp accepts a
+  // cross-origin response either because CORP allows it or because the request
+  // passed a CORS check, and this one did. Setting it as well produced a second,
+  // conflicting CORP header where a reverse proxy already adds same-origin.
+};
+
 const deny = (res, code, message, id = null) => {
+  cors(res);
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }));
 };
 
 createServer((req, res) => {
-  if (req.method !== "POST") { res.writeHead(405).end("POST only"); return; }
+  // A JSON content-type makes this a preflighted request, so OPTIONS has to
+  // be answered before the POST is ever sent.
+  if (req.method === "OPTIONS") { cors(res); res.writeHead(204).end(); return; }
+  if (req.method !== "POST") { cors(res); res.writeHead(405).end("POST only"); return; }
   const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress;
   if (rateLimited(ip)) { deny(res, -32029, "rate limited"); return; }
 
@@ -55,6 +82,7 @@ createServer((req, res) => {
     req.on("data", (c) => { t += c; if (t.length > 512) req.destroy(); });
     req.on("end", () => {
       console.log(`[diag ${ip}] ${t.replace(/[\r\n]+/g, " ").slice(0, 400)}`);
+      cors(res);
       res.writeHead(204).end();
     });
     return;
@@ -100,6 +128,7 @@ createServer((req, res) => {
         signal: AbortSignal.timeout(60_000),
       });
       const text = await upstream.text();
+      cors(res);
       res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
       res.end(text);
     } catch (e) {
