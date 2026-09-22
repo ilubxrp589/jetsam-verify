@@ -51,11 +51,45 @@ is badged CACHED, not FULL, with the difference spelled out.
 
 ## "Has it actually verified anything?"
 
-Live mainnet at heights 16478, 16480, 16501 and 16511, with the proof between
-849 and 854 KB each time and the replay around three minutes. The page also has
-a button that flips one bit of the proof before checking; that is rejected in
-about four seconds with `Verify(Auxiliary)`, so the rejection is cryptographic
-rather than a parse failure.
+Live mainnet at heights 16478, 16480, 16501 and 16511 before the fork, and at
+17896 and 17910 after it, with the proof between 849 and 874 KB each time and
+the browser replay around three minutes. The page also has a button that flips
+one bit of the proof before checking; that is rejected in about four seconds
+with `Verify(Auxiliary)`, so the rejection is cryptographic rather than a parse
+failure.
+
+## "What happened to it at the v1.3 fork?"
+
+It broke, as expected, and re-pointing it was not the one-line pin change I had
+assumed. Three things were wrong, and each was found by testing rather than by
+reading the source:
+
+A v1.3 binary embeds **two** parameter packs, since one binary verifies blocks
+on both sides of the fork. My extractor assumed one and picked by a hardcoded
+file offset, so it would have shipped the pre-fork matrices under the new pin.
+It now scans for the shape header, writes every pack, and chooses by asking the
+build which generation governs the current tip.
+
+The relation itself changed, so the wasm had to be rebuilt and its entry point
+widened: v1.3 binds two epoch anchors and roots its recursion at the activation
+boundary rather than at genesis, and my `verify` passed neither. Rebuilding that
+boundary from its three permanent headers also closed a hole I had left open,
+since the recursion root carried in the public IO was not being checked at all,
+and a valid terminal of a different branch at 17749 would have been accepted.
+
+My staleness detection was keyed on the terminal's wire-version byte, which v1.3
+left at 5, so the page would have shown a red verification failure on a healthy
+chain. Keying it on `ForeignIoLayout` instead turned out to be wrong too: a
+post-fork terminal offered to the pre-fork parameters actually raises
+`WireEncoding`, because the older encoding accepts a range of frame lengths and
+the newer frame fits inside it. It now splits on whether the failure happened
+while reading the frame or during the replay, which is the distinction that
+actually matters, plus an exact check against the activation schedule for the
+case it can prove outright.
+
+If any of that reflects a misunderstanding of how you intend the generations to
+be selected, I would rather hear it now than keep a page up that is confidently
+wrong.
 
 ## "What Rust toolchain does the browser build need?"
 

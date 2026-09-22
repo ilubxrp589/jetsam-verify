@@ -2,9 +2,10 @@
 
 I built a page that verifies Jetsam mainnet state entirely client-side in
 WebAssembly, trusting nothing but the SHA256 of your published
-`jetsam-node-linux-x86_64` v1.2.0 release. It works, against live mainnet:
+`jetsam-node-linux-x86_64` release. It works, against live mainnet, and it
+crossed the v1.3 fork:
 
-    height 16501 · proof 853 KB · verified in 3:03 in a browser tab
+    height 17910 · proof 851 KB · v1.3 relation, rooted at 17749
 
 Live: https://jtmverify.halcyon-names.io
 Source and patches: https://github.com/ilubxrp589/jetsam-verify
@@ -14,15 +15,20 @@ testnet build was `testnet-v1.1.2`, which could not sync the live test chain
 (`unsupported HistoryStep version 5`). The `*-testnet-*` binaries in v1.3.0
 look like they resolve that; I have not retried.
 
-**Against:** `7dad97d` (tag `v1.3.0`). Verified against a pristine clone of
-that tag: all four apply, the workspace then passes `cargo check --workspace`,
-and both the native and wasm32 builds succeed. Apply with
+**Against:** `381f35d` (tag `v1.3.1`). Verified against a pristine clone of
+that tag: `git reset --hard v1.3.1 && git clean -fd`, all four apply, and the
+workspace then BUILDS, native and wasm32. I check by building rather than by
+`git apply --check`, because that check passes on a patch that deletes a file
+without creating its replacement (`git diff` omits untracked files) and it
+let exactly that through once. Apply with
 `git apply 0001-*.patch 0002-*.patch 0003-*.patch 0004-*.patch`.
 
-The measurements below were taken on v1.2.0. v1.3.0's changes are in
-`consensus/` and `jetsam_miner`, none of which these patches touch, and it
-states that proof classes and page budgets are unchanged, so I have not re-run
-the numbers.
+The measurements below were taken on v1.2.0 and I have not re-run them all.
+v1.3's changes are in `consensus/` and the relation, which these patches do
+not touch, and the class shapes are unchanged (m=22 and m=24, k_skip=6 in
+both generations). The one number I did re-measure post-fork is the class-0
+matrix scan, which patch 0003 speeds up: 61.6 s natively and 7:03 in a
+browser on six threads.
 
 Four changes were needed. **Three are useful to you regardless of browsers**,
 and one of them speeds up your own node startup. Nothing here touches
@@ -199,7 +205,7 @@ so treat it as a hint rather than a result.
 Desktop only. The first run peaks near 4.3 GB of memory and needs
 `SharedArrayBuffer`, so it will not complete on a phone. Cached parameters
 occupy roughly 913 MB of browser storage. Every verification after the first is
-853 KB and about three minutes, at any chain height, since proof size does not
+851 KB and about three minutes, at any chain height, since proof size does not
 grow with height.
 
 James Turner
