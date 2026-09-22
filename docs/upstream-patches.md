@@ -1,11 +1,16 @@
-# Make the Jetsam verifier run in a browser: 4 patches
+# Four changes that let the Jetsam verifier run in a browser
 
-I built a page that verifies Jetsam mainnet state entirely client-side in
-WebAssembly, trusting nothing but the SHA256 of your published
-`jetsam-node-linux-x86_64` release. It works, against live mainnet, and it
-crossed the v1.3 fork:
+> **Status: not an open proposal.** This was written as a patch submission.
+> The Jetsam maintainers have since said they will implement these changes
+> themselves, so it is kept as the technical record of what had to move, why,
+> and what was measured. The patches in `../patches/` apply to `v1.3.1` and
+> build; they are a reference, not a request.
 
-    height 17910 · proof 851 KB · v1.3 relation, rooted at 17749
+This page verifies Jetsam mainnet state entirely client-side in WebAssembly,
+trusting nothing but the SHA256 of the published `jetsam-node-linux-x86_64`
+release. It works against live mainnet, and it crossed the v1.3 fork:
+
+    height 17910 · proof ~853 KB · v1.3 relation, rooted at 17749
 
 Live: https://jtmverify.halcyon-names.io
 Source and patches: https://github.com/ilubxrp589/jetsam-verify
@@ -166,7 +171,7 @@ artifacts, because there is no independently-checkable digest for the packed
 form. That is a **~29 minute** first run in a browser. `load_cached_matrix`
 already restores a packed image in **430 ms**, so a published packed digest
 would replace 29 minutes of computation with a download, **with the trust model
-unchanged**: still only your published hash, still no trust in whoever served
+unchanged**: still only the published hash, still no trust in whoever served
 the bytes.
 
 To be fair about the trade rather than overselling it: the packed images are
@@ -208,10 +213,11 @@ so treat it as a hint rather than a result.
 
 ## Scope, honestly stated
 
-Desktop only. The first run peaks near 4.3 GB of memory and needs
-`SharedArrayBuffer`, so it will not complete on a phone. Cached parameters
-occupy roughly 913 MB of browser storage. Every verification after the first is
-851 KB and about three minutes, at any chain height, since proof size does not
+Desktop only, and the page enforces it rather than warning about it: a phone
+or tablet is offered no start button, because the first run peaks near 4.3 GB
+and needs real worker threads. Cached parameters occupy roughly 913 MB of
+browser storage, as 171 MB and 742 MB. Every verification after the first is
+~853 KB and about two minutes, at any chain height, since proof size does not
 grow with height.
 
 James Turner

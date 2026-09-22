@@ -225,5 +225,5 @@ wider net exists too.
 
 ## Licence
 
-The patches in `patches/` are against `jetsam-chain/jetsam` and carry that
-project's licence (MIT OR Apache-2.0). Everything else here is MIT.
+MIT, in `LICENSE`. The patch series in `patches/` applies to
+`jetsam-chain/jetsam` and carries that project's licence (Apache-2.0).
