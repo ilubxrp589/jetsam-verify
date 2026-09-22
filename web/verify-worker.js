@@ -173,7 +173,8 @@ self.onmessage = async (e) => {
     if (out.status === "verified") {
       send({ type: "verified", ...out, seconds, trust, tamper, tamperAt });
     } else if (out.status === "stale") {
-      send({ type: "stale", reason: out.reason, generation: out.generation, pin: PIN });
+      send({ type: "stale", reason: out.reason, generation: out.generation,
+             certain: out.certain === true, pin: PIN });
     } else {
       send({ type: "failed", message: out.reason || `unrecognised result: ${out.status}`,
              tamper });

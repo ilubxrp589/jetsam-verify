@@ -108,7 +108,12 @@ fn main() {
     let url = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_RPC.to_string());
 
     // 1. Runtime metadata, pinned by its own trailing poseidon2b digest.
-    let meta = std::fs::read("assets/history-step.runtime.mainnet").expect("metadata");
+    // Overridable so the "wrong generation" path can be exercised on purpose:
+    // point this at the pre-fork pack and a post-fork terminal must come back
+    // as ForeignIoLayout, not as a verification failure.
+    let meta_path = std::env::var("JETSAM_VERIFY_METADATA")
+        .unwrap_or_else(|_| "assets/history-step.runtime.mainnet".to_string());
+    let meta = std::fs::read(&meta_path).unwrap_or_else(|e| panic!("{meta_path}: {e}"));
     let pinned: [u8; 32] = meta[meta.len() - 32..].try_into().unwrap();
     let md = decode_history_step_runtime_metadata_pinned(&meta, pinned)
         .expect("metadata decodes against its own pinned digest");
@@ -207,6 +212,36 @@ fn main() {
             println!("   class       {}", accepted.class_id().index());
             println!("   generation  {generation:?}, rooted at {root_height}");
         }
-        Err(e) => println!("\n=== VERIFY FAILED after {:?}: {e:?} ===", t.elapsed()),
+        // Same split the page makes: a frame that never parsed as a terminal
+        // of this relation is not a proof that failed, and must not be
+        // reported as one. See `is_unreadable_frame` in src/lib.rs.
+        Err(e) => {
+            let unreadable = matches!(
+                e,
+                jetsam_recursive::HistoryStepError::ForeignIoLayout { .. }
+                    | jetsam_recursive::HistoryStepError::WireVersion
+                    | jetsam_recursive::HistoryStepError::WireLength { .. }
+                    | jetsam_recursive::HistoryStepError::WireEncoding
+                    | jetsam_recursive::HistoryStepError::InvalidClass
+                    | jetsam_recursive::HistoryStepError::RootlessGeneration
+            );
+            let governs = HistoryStepPackGeneration::at_height(height);
+            if governs != generation {
+                println!(
+                    "\n=== WRONG PARAMETERS after {:?}: block {height} is governed by \
+                     {governs:?}, these are the {generation:?} parameters ({e:?}) ===",
+                    t.elapsed()
+                );
+            } else if unreadable {
+                println!(
+                    "\n=== UNREADABLE FRAME after {:?}: {e:?} ===\n   \
+                     These bytes are not a terminal of the {generation:?} relation. Nothing was \
+                     verified, so this is not a proof that failed.",
+                    t.elapsed()
+                );
+            } else {
+                println!("\n=== VERIFY FAILED after {:?}: {e:?} ===", t.elapsed());
+            }
+        }
     }
 }

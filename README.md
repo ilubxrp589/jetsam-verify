@@ -146,12 +146,32 @@ than silently verifying new proofs against old parameters.
 
 A page pinned to one release will eventually meet a chain that has moved past
 it, and "verification failed" would be a false alarm on the one page that must
-not cry wolf. Upstream distinguishes the two cases itself: `ForeignIoLayout`
-means the frame is a well-formed terminal of *another* relation and the sender
-is not at fault. That, and `WireVersion`, are reported as **out of date**;
-everything else stays a loud failure. The staleness signal is deliberately not
-the terminal's wire-version byte: v1.3 changed the relation while leaving that
-byte at 5, so a page keyed to it would have shown a false alarm.
+not cry wolf. The split is **where** it failed:
+
+- the bytes never parsed as a terminal of this relation, so no cryptography ran
+  on them. Reported amber. Nothing was verified and nothing failed a check.
+- the frame parsed as ours and then did not check out. Reported crimson, loudly.
+  The tamper button lands here, as `Verify(Auxiliary)`.
+
+Two things this got wrong on the first pass, both caught by measuring instead of
+reasoning. The signal was originally the terminal's wire-version byte, and v1.3
+changed the relation while leaving that byte at 5, so the page would have shown
+a crimson failure on the one upgrade it was built to survive. The replacement
+keyed on `ForeignIoLayout`, which is upstream's own name for "a well-formed
+terminal of another relation" but is not the only shape the case takes: feeding
+the pre-fork parameters a post-fork terminal actually yields `WireEncoding`,
+because the older encoding accepts a *range* of frame lengths and the newer
+frame fits inside it, is read at the wrong IO width, and desynchronises. The
+net is now every frame-level variant, which is wider than "out of date" and the
+page words it accordingly: bytes that will not parse are also what a broken or
+hostile server returns, and the page does not claim to know which.
+
+There is one case it can name exactly. This build's own activation schedule
+says which relation governs any given height, so a terminal for a block on the
+other side of a fork this build knows about is reported as a definite version
+mismatch rather than an unreadable frame. That covers a node serving a pre-fork
+proof; it cannot cover a fork this build has never heard of, which is why the
+wider net exists too.
 
 ## Licence
 

@@ -167,15 +167,33 @@ fn generation_name(generation: HistoryStepPackGeneration) -> &'static str {
 /// A failed verification is one of two very different things, and the page
 /// must not blur them.
 ///
-/// `ForeignIoLayout` and `WireVersion` are upstream's own way of saying "this
-/// frame is well formed, it just belongs to a relation these parameters are
-/// not for" — the sender is not at fault and neither is the chain. For a page
-/// pinned to one release that means exactly one thing: the page is out of
-/// date. Everything else is a proof that did not check out, and stays loud.
-fn is_stale_parameters(error: &HistoryStepError) -> bool {
+/// The split is WHERE it failed, not how bad it sounds. Everything below is
+/// raised while the frame is still being read: the bytes are not a terminal of
+/// the relation these parameters are for, so no cryptography ever ran on them.
+/// Everything else is a proof that parsed as ours and then did not check out,
+/// and that stays loud.
+///
+/// `ForeignIoLayout` is upstream naming the case outright, but it is not the
+/// only shape the case takes, and measuring that was worth doing: offering a
+/// post-fork terminal to the pre-fork parameters gives `WireEncoding`, not
+/// `ForeignIoLayout`, because the older encoding accepts a *range* of lengths
+/// and the newer frame fits inside it, is read at the wrong IO width, and
+/// desynchronises. A page that only looked for `ForeignIoLayout` would have
+/// cried wolf on exactly the upgrade it was built to survive.
+///
+/// This is a wider net than "the page is out of date", and the page says so:
+/// bytes that do not parse as a terminal are also what a broken or hostile
+/// server returns. Neither of those is "the chain produced a bad proof", which
+/// is the one claim this page must not make wrongly.
+fn is_unreadable_frame(error: &HistoryStepError) -> bool {
     matches!(
         error,
-        HistoryStepError::ForeignIoLayout { .. } | HistoryStepError::WireVersion
+        HistoryStepError::ForeignIoLayout { .. }
+            | HistoryStepError::WireVersion
+            | HistoryStepError::WireLength { .. }
+            | HistoryStepError::WireEncoding
+            | HistoryStepError::InvalidClass
+            | HistoryStepError::RootlessGeneration
     )
 }
 
@@ -483,6 +501,28 @@ impl Verifier {
         jetsam_ivc_core::verifier::set_budgeted_large_stack_worker(true);
 
         let generation = self.runtime.bank().generation();
+
+        // The unambiguous mismatch, checked before anything expensive: this
+        // build's own activation schedule says which relation governs the
+        // terminal's height, and it is not the one these parameters are. That
+        // happens when a node serves a pre-fork proof to a post-fork page. It
+        // cannot catch a fork this build has never heard of, which is why the
+        // frame-level net above exists as well.
+        if terminal.len() >= 9 {
+            let height = u64::from_le_bytes(terminal[1..9].try_into().unwrap());
+            let governing = HistoryStepPackGeneration::at_height(height);
+            if governing != generation {
+                return Ok(format!(
+                    "{{\"status\":\"stale\",\"certain\":true,\"reason\":\"the proof is for block \
+                     {height}, which this build's schedule says is governed by the {} relation, not the \
+                     {} parameters this page carries\",\"generation\":\"{}\"}}",
+                    generation_name(governing),
+                    generation_name(generation),
+                    generation_name(generation),
+                ));
+            }
+        }
+
         let header = decode_header("header", Some(header))?;
         let epoch = decode_header("epoch header", Some(epoch_header))?;
         let previous_epoch = match previous_epoch_header.as_deref() {
@@ -551,9 +591,13 @@ impl Verifier {
                 generation_name(generation),
             )),
             Err(error) => {
-                let status = if is_stale_parameters(&error) { "stale" } else { "failed" };
+                // `certain` is false here on purpose. A frame that will not
+                // parse is what an upgraded chain looks like, and also what a
+                // broken or hostile server looks like; the page must not claim
+                // to know which.
+                let status = if is_unreadable_frame(&error) { "stale" } else { "failed" };
                 Ok(format!(
-                    "{{\"status\":\"{status}\",\"reason\":\"{}\",\"generation\":\"{}\"}}",
+                    "{{\"status\":\"{status}\",\"certain\":false,\"reason\":\"{}\",\"generation\":\"{}\"}}",
                     json_escape(&format!("{error:?}")),
                     generation_name(generation),
                 ))

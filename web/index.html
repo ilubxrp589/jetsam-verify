@@ -613,19 +613,24 @@ worker.onmessage = ({ data: m }) => {
       for (const k in timers) clearInterval(timers[k]);
       jobRunning = false; $("pulse").hidden = true; $("plate").classList.remove("working");
       stopLoad(); clockStop(); chip("unknown");
-      label.textContent = "Out of date";
+      label.textContent = m.certain ? "Out of date" : "Unreadable";
       paint(`<div class="stale">
-          <h2>This page is out of date</h2>
-          <p>Jetsam has upgraded how proofs are constructed. The chain is fine and nothing here
-             failed a check: these verification parameters were extracted for the previous protocol
-             version and cannot read the new proof format.</p>
-          <p>It needs re-pointing at the current release before it can verify again.</p>
-          <div class="det">the proof is a well-formed terminal of another relation · this page
-            carries the ${m.generation} parameters pinned at ${m.pin.slice(0,16)}…</div>
+          <h2>${m.certain ? "This page is out of date"
+                          : "This page could not read that proof"}</h2>
+          <p>Nothing here failed a check, because nothing was checked: the bytes never parsed as a
+             proof of the protocol version these parameters were extracted for.</p>
+          <p>${m.certain
+               ? `Jetsam has upgraded how proofs are constructed. The chain is fine. This page needs
+                  re-pointing at the current release before it can verify again.`
+               : `A protocol upgrade this page has not been re-pointed at is the usual cause, and a
+                  server returning something other than a proof looks identical from here. Either
+                  way, this is not evidence that the chain produced a bad proof.`}</p>
+          <div class="det">${m.reason} · this page carries the ${m.generation} parameters
+            pinned at ${m.pin.slice(0,16)}…</div>
         </div>
         <button class="act" id="go" style="margin-top:20px">Try again</button>`);
       wire();
-      log(`OUT OF DATE: the chain's proofs belong to another relation; this page carries ${m.generation} · ${m.reason}`);
+      log(`${m.certain ? "OUT OF DATE" : "UNREADABLE"}: ${m.reason}`);
       break;
     }
     case "failed": {
