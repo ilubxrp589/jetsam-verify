@@ -17,6 +17,10 @@ import init, { initThreadPool, thread_count, Parameters,
 // relation that governs blocks from the activation height on, which is every
 // block this page will ever be shown.
 const PIN = "99c447656912c9030b2cf893f5bab78b360ad8cfdad73bf668a90d270c54e3c9";
+// The release that digest was extracted from. It travels with the pin because
+// the two only ever change together, and naming the wrong release beside a
+// right digest is as misleading as getting the digest wrong.
+const RELEASE = "v1.3.1";
 
 const send  = (m) => self.postMessage(m);
 const hex   = (s) => Uint8Array.from(s.match(/../g).map((b) => parseInt(b, 16)));
@@ -97,8 +101,12 @@ const startEngine = () => (engine ??= (async () => {
 self.onmessage = async (e) => {
   const cmd = e.data?.type;
   if (cmd === "probe") {
+    // The page renders the digest plate from this, rather than from a copy of
+    // the hash pasted into the HTML. A second copy is a second thing to forget
+    // at a re-point, and the plate is the one value a visitor is told to check
+    // against the published release.
     send({ type: "probe", cached: await cacheState(), isolated: self.crossOriginIsolated,
-           cores: navigator.hardwareConcurrency || 0 });
+           cores: navigator.hardwareConcurrency || 0, pin: PIN, release: RELEASE });
     return;
   }
   if (cmd !== "run") return;

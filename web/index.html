@@ -204,12 +204,12 @@ details.env summary::-webkit-details-marker{display:none}
         <div class="sc">The only external trust</div>
         <div class="plate" id="plate">
           <div class="sc" style="font-size:10px;color:var(--ink-3)">metadata digest · poseidon2b</div>
-          <div class="val" id="pin">148986844146fe0a4d498bd75f9938c63d1a56dfb5c9265341203c7aa7edb5c2</div>
+          <div class="val" id="pin"></div>
           <button id="copy">Copy</button>
         </div>
         <div style="font-size:12px;color:var(--ink-2);margin-top:9px;line-height:1.5">
-          Embedded in the published <span class="mono">jetsam-node</span> v1.2.0 binary.
-          Check its SHA256 on
+          Embedded in the published <span class="mono">jetsam-node</span>
+          <span id="release">…</span> binary. Check its SHA256 on
           <a href="https://github.com/jetsam-chain/jetsam/releases" style="color:var(--blue)">GitHub releases</a>.
         </div>
       </div>
@@ -219,7 +219,7 @@ details.env summary::-webkit-details-marker{display:none}
           <h4>Checked here, not trusted</h4>
           <ul>
             <li>Chain proof, headers, state</li>
-            <li>The 16.1 MB of proving parameters</li>
+            <li>The 16.2 MB of proving parameters</li>
             <li>Every field operation, replayed locally</li>
           </ul>
         </div>
@@ -557,6 +557,8 @@ function wire() {
 worker.onmessage = ({ data: m }) => {
   switch (m.type) {
     case "probe": {
+      $("pin").textContent = m.pin || "unavailable";
+      $("release").textContent = m.release || "release";
       $("sparkthreads").textContent = `${m.cores || "?"} threads`;
       env({ "threads": m.cores || "?", "isolated": String(m.isolated),
             "deviceMemory": (navigator.deviceMemory ? navigator.deviceMemory + " GB" : "n/a"),
