@@ -29,6 +29,11 @@ body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);f
 
 /* ── frame ── */
 .frame{display:grid;grid-template-columns:340px 1fr;gap:34px;align-items:start}
+/* Grid children are min-width:auto by default, so one unbreakable line widens
+   its whole track. Measured: the rail sat at 420px inside a 390px phone and
+   the page scrolled sideways. Harmless on desktop, where the track is a fixed
+   340px either way. */
+.frame>*{min-width:0}
 
 /* ── trust rail ── */
 .rail>*+*{margin-top:22px}
@@ -130,6 +135,7 @@ details.env summary::-webkit-details-marker{display:none}
   line-height:1.75;height:160px;overflow-y:auto;padding:13px 15px;white-space:pre-wrap}
 
 .mobile{display:none;border:2px solid var(--rule);padding:16px;margin-bottom:22px;font-size:14px}
+body.no-verify .mobile{display:block}
 
 /* ── instrument motion ──────────────────────────────────────────────────
    Motion exists only to prove work is happening during the 5.7 / 24.8 / 5.3
@@ -174,7 +180,21 @@ details.env summary::-webkit-details-marker{display:none}
 }
 @media(max-width:1000px){
   .frame{grid-template-columns:1fr}
-  .mobile{display:block}
+}
+/* Phone width. The page cannot verify here and says so, but it should still
+   be readable rather than scrolling sideways: 40px of side padding is a
+   tenth of the screen, and the masthead's constants line cannot stay on one
+   line at this size. Nothing above this breakpoint changes. */
+@media(max-width:560px){
+  .sheet{padding:26px 16px 52px}
+  .mast{gap:10px}
+  .mast h1{font-size:25px}
+  .mast .const{white-space:normal}
+  .phase .top{flex-wrap:wrap;gap:4px}
+  .stamp{padding:20px 18px}
+  .stamp dl{grid-template-columns:1fr;gap:2px 0}
+  .stamp dt{margin-top:8px}
+  .takeover{padding:26px 22px}
 }
 </style>
 
@@ -433,6 +453,22 @@ let painted = false;
 let jobRunning = false;
 let tamperMode = false;
 let rpcUrl = null;   // null = this site's same-origin gateway
+
+// Can this DEVICE finish a verification? It needs real worker threads and
+// peaks near 4.3 GB. A phone will start, work for twenty minutes and then be
+// killed by the OS, which is a worse experience than being told no, and it
+// leaves someone believing the chain failed to verify when it was their
+// device that gave out. So the button is not offered at all.
+//
+// Window width is the wrong test: a desktop user with a narrow window can
+// verify perfectly well. Touch-only pointing and reported memory are about
+// the machine. deviceMemory is Chromium-only and caps at 8, so the pointer
+// test is what catches iOS.
+const TOUCH_ONLY = matchMedia("(pointer: coarse)").matches
+                && !matchMedia("(pointer: fine)").matches;
+const LOW_MEMORY = typeof navigator.deviceMemory === "number" && navigator.deviceMemory < 8;
+const CAN_VERIFY = !TOUCH_ONLY && !LOW_MEMORY;
+if (!CAN_VERIFY) document.body.classList.add("no-verify");
 addEventListener("beforeunload", (e) => {
   if (!jobRunning) return;
   e.preventDefault();          // a scan in flight cannot be resumed
@@ -569,6 +605,23 @@ worker.onmessage = ({ data: m }) => {
       env({ "threads": m.cores || "?", "isolated": String(m.isolated),
             "deviceMemory": (navigator.deviceMemory ? navigator.deviceMemory + " GB" : "n/a"),
             "params cached": m.cached >= 2 ? "yes (2 sets)" : "no" });
+      if (!CAN_VERIFY) {
+        label.textContent = "Desktop required";
+        paint(`<p class="voyage">${VOYAGE}</p>
+          <div style="border:2px solid var(--rule);padding:15px;font-size:14px;max-width:58ch;
+            line-height:1.6">
+            <b>There is nothing to start on this device.</b> Authenticating the parameters holds
+            about 4.3 GB and needs real worker threads, so a phone or tablet is stopped by the
+            operating system part way through. Being told that now is better than watching it die
+            at minute twenty and wondering whether the chain failed.
+            <div style="margin-top:12px;color:var(--ink-2)">Everything above is still true and
+            still checkable: the digest on the left is the one value this page asks you to trust,
+            and you can compare it against the published release from here.</div>
+          </div>`);
+        log(`this device cannot complete a verification${TOUCH_ONLY ? " (touch-only pointing)" : ""}` +
+            `${LOW_MEMORY ? ` (reports ${navigator.deviceMemory} GB)` : ""}`);
+        return;
+      }
       if (!m.isolated) {
         label.textContent = "Unavailable";
         paint(`<p class="voyage">${VOYAGE}</p>
@@ -741,7 +794,7 @@ $("copy").onclick = async () => {
 };
 chip("unknown");
 worker.postMessage({ type: "probe" });
-if (new URLSearchParams(location.search).get("auto") === "1") {
+if (CAN_VERIFY && new URLSearchParams(location.search).get("auto") === "1") {
   const t = setInterval(() => { const g = $("go"); if (g && !g.disabled) { clearInterval(t); g.click(); } }, 500);
 }
 </script>

@@ -46,8 +46,16 @@ read high if anything; the replay figure is the mean of three runs. The
 pre-fork numbers are not carried over, since the relation and the matrices
 both changed and the old replay estimate was out by more than a factor of two.
 
-Desktop only. The first run peaks near 4.3 GB of memory and needs
-`SharedArrayBuffer`, so it will not complete on a phone.
+Desktop only, and the page enforces it rather than warning about it. A phone
+or tablet is offered no start button at all: the run holds about 4.3 GB and
+needs real worker threads, so the operating system stops it part way through,
+and someone watching that happen has no way to tell a dead tab from a chain
+that failed to verify. The test is the device, not the window, since a desktop
+user with a narrow window can verify perfectly well: touch-only pointing, or a
+reported `deviceMemory` under 8 GB.
+
+The narrow layout exists so the refusal and the digest are legible, not to
+invite a run.
 
 It is slow for one reason: Jetsam's cryptography leans on CPU instructions that
 WebAssembly does not have. Profiling with `JETSAM_CPU_BACKEND=scalar` separates
