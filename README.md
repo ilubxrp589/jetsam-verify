@@ -129,6 +129,14 @@ merely well-formed but wrong cannot pass it.
 - a rewrite from `/pkg-web/` to `/pkg-web/jetsam_verify.js`, because
   wasm-bindgen-rayon's worker imports the package *directory*. Without it the
   thread pool waits forever for `wasm_bindgen_worker_ready` and nothing loads.
+- `Cache-Control: no-cache` on everything it serves. The page, the worker, the
+  wasm and the parameters are one release, and with no cache header at all a
+  browser applies heuristic freshness and will happily pair a stale copy of one
+  with fresh copies of the rest. That is not hypothetical: a cached worker
+  beside a new page left the digest plate, the single value a visitor is asked
+  to check, reading "unavailable" on a phone. `no-cache` does not mean "do not
+  store" — the browser keeps its copy and revalidates, so an unchanged file
+  costs one 304 and no bytes.
 
 `rpc-proxy.mjs` is a read-only JSON-RPC gateway with a **default-deny
 allowlist** of five methods. Do not point a public page straight at a node:

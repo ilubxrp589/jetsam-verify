@@ -557,8 +557,14 @@ function wire() {
 worker.onmessage = ({ data: m }) => {
   switch (m.type) {
     case "probe": {
-      $("pin").textContent = m.pin || "unavailable";
+      // A probe reply with no digest means the page and the engine are
+      // different versions, which in practice means a cached worker. Name
+      // that, rather than leaving a bare "unavailable" where the one value a
+      // visitor is told to check is supposed to be.
+      $("pin").textContent = m.pin || "not reported \u2014 reload this page";
       $("release").textContent = m.release || "release";
+      if (!m.pin) log("the engine did not report a digest; this page and its worker are " +
+                      "different versions. Reload to pick up the current one.");
       $("sparkthreads").textContent = `${m.cores || "?"} threads`;
       env({ "threads": m.cores || "?", "isolated": String(m.isolated),
             "deviceMemory": (navigator.deviceMemory ? navigator.deviceMemory + " GB" : "n/a"),
