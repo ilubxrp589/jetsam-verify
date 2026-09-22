@@ -61,6 +61,19 @@ async function cacheState() {
   } catch { return 0; }
 }
 
+// Started once and reused. rayon's global pool can only be built once, so a
+// second initThreadPool panics inside wasm-bindgen-rayon and surfaces as
+// "called `Result::unwrap_throw()` on an `Err` value" -- which reads like a
+// verification failure and is not one. Every button on the page that starts a
+// second run reached that, because each successful run so far had been a fresh
+// page load.
+let engine = null;
+const startEngine = () => (engine ??= (async () => {
+  await init();
+  await initThreadPool(navigator.hardwareConcurrency);
+  return thread_count();
+})());
+
 self.onmessage = async (e) => {
   const cmd = e.data?.type;
   if (cmd === "probe") {
@@ -74,9 +87,8 @@ self.onmessage = async (e) => {
   let trust = "full";
   try {
     send({ type: "stage", stage: "engine" });
-    await init();
-    await initThreadPool(navigator.hardwareConcurrency);
-    send({ type: "engine", threads: thread_count(), isolated: self.crossOriginIsolated });
+    const threads = await startEngine();
+    send({ type: "engine", threads, isolated: self.crossOriginIsolated });
 
     // 1. Parameters: metadata authenticates itself against the pinned digest.
     send({ type: "stage", stage: "metadata" });
