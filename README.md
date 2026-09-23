@@ -139,7 +139,10 @@ DevTools protocol, reporting the verdict, the time taken and Chrome's peak
 memory, and saving a screenshot of each result. `THEN` runs more in the same
 page load, each of which must pass: verify again, walk to a block 300 below
 the tip, and reject a tampered proof. A new profile is a first visit and takes
-about half an hour; passing that profile again tests the cached path.
+about half an hour; passing that profile again tests the cached path. It is
+heavy, near 4 GB and every core for that half hour, so run it on a machine
+where that costs nothing else: on a box that also served a ledger node, it was
+enough to push that node's RPC into timeouts.
 
 ## Serving it
 
