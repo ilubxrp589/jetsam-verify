@@ -12,7 +12,10 @@
 //!   * the terminal and every header come off an RPC we do not trust -- if any
 //!     byte were wrong the proof replay below would reject it.
 //!
-//!     cargo run --release --bin verify_terminal [rpc-url]
+//!     cargo run --release --bin verify_terminal [rpc-url] [--block HEIGHT]
+//!
+//! `--block` then walks parent links from the verified tip down to HEIGHT,
+//! with the same code the page runs (`src/ancestry.rs`).
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -32,7 +35,12 @@ use jetsam_recursive::{
     HistoryStepPackGeneration, HistoryStepRuntime, RecursionRoot, HISTORY_STEP_CLASS_COUNT,
 };
 
+#[path = "../ancestry.rs"]
+mod ancestry;
+
 const DEFAULT_RPC: &str = "http://127.0.0.1:3097/rpc";
+/// Headers per range request; the gateway refuses more.
+const RANGE_MAX: u64 = 250;
 
 /// Loads a class's canonical matrix on first use and authenticates it with the
 /// SAFE loader. Lazy on purpose: it shows which classes a given terminal
@@ -79,12 +87,7 @@ impl HistoryStepMatrixSource for LazyMatrices {
 /// into a crate that otherwise has none. Nothing here is trusted: a wrong byte
 /// makes the replay reject.
 fn rpc(url: &str, method: &str, params: &str) -> Option<String> {
-    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
-    let out = Command::new("curl")
-        .args(["-s", "-m", "60", "-X", "POST", url, "-H", "content-type: application/json", "-d", &body])
-        .output()
-        .expect("curl");
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let text = rpc_raw(url, method, params);
     if let Some(at) = text.find("\"error\"") {
         panic!("{method} failed: {}", &text[at..text.len().min(at + 200)]);
     }
@@ -97,6 +100,48 @@ fn rpc(url: &str, method: &str, params: &str) -> Option<String> {
     Some(rest[..rest.find('"')?].to_string())
 }
 
+/// The whole response body, errors included, for callers that handle them.
+fn rpc_raw(url: &str, method: &str, params: &str) -> String {
+    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#);
+    let out = Command::new("curl")
+        .args(["-s", "-m", "60", "-X", "POST", url, "-H", "content-type: application/json", "-d", &body])
+        .output()
+        .expect("curl");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Headers `from..to`, ascending. One range request per `RANGE_MAX` blocks
+/// where the source offers `jetsam_getHeadersByHeightRange` (rpc-proxy.mjs
+/// does; a node does not), otherwise one request per header.
+fn headers_between(url: &str, from: u64, to: u64) -> Vec<BlockHeader> {
+    let decode = |hex: &str, height: u64| {
+        BlockHeader::from_bytes(&hex::decode(hex).expect("header hex"))
+            .unwrap_or_else(|e| panic!("header {height}: {e:?}"))
+    };
+    let mut out = Vec::new();
+    let mut start = from;
+    while start < to {
+        let count = (to - start).min(RANGE_MAX);
+        let text = rpc_raw(url, "jetsam_getHeadersByHeightRange", &format!("[{start},{count}]"));
+        if text.contains("\"error\"") {
+            if !text.contains("-32601") {
+                panic!("header range failed: {}", &text[..text.len().min(200)]);
+            }
+            return (from..to).map(|h| header_at(url, h)).collect();
+        }
+        // `"result":["<hex>",...]`: every quoted run after the key is a header.
+        let list = &text[text.find("\"result\":").expect("result") + 9..];
+        let list = &list[..list.find(']').expect("result array")];
+        let hexes: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+        assert_eq!(hexes.len() as u64, count, "short header range at {start}");
+        for (offset, hex) in hexes.iter().enumerate() {
+            out.push(decode(hex, start + offset as u64));
+        }
+        start += count;
+    }
+    out
+}
+
 fn header_at(url: &str, height: u64) -> BlockHeader {
     let hex = rpc(url, "jetsam_getHeaderByHeight", &format!("[{height}]"))
         .unwrap_or_else(|| panic!("no header at height {height}"));
@@ -105,7 +150,16 @@ fn header_at(url: &str, height: u64) -> BlockHeader {
 }
 
 fn main() {
-    let url = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_RPC.to_string());
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let block: Option<u64> = args.iter().position(|a| a == "--block").map(|at| {
+        args.get(at + 1).and_then(|h| h.parse().ok()).expect("--block needs a height")
+    });
+    let url = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with("--") && (*i == 0 || args[i - 1] != "--block"))
+        .map(|(_, a)| a.clone())
+        .unwrap_or_else(|| DEFAULT_RPC.to_string());
 
     // 1. Runtime metadata, pinned by its own trailing poseidon2b digest.
     // Overridable so the "wrong generation" path can be exercised on purpose:
@@ -211,6 +265,18 @@ fn main() {
             println!("   semantic id {}", hex::encode(accepted.semantic_id()));
             println!("   class       {}", accepted.class_id().index());
             println!("   generation  {generation:?}, rooted at {root_height}");
+            // Pinned by the proof and shown by the explorer, so they can be
+            // compared against a source this run did not use. Not the block
+            // hash: it covers the nonce, which the proof leaves free.
+            println!("   state root  {}", hex::encode(header.state_root));
+            println!("   parent      {}", hex::encode(header.prev_block_hash));
+            println!(
+                "   compare     https://explorer.jetsamchain.com/?network=mainnet#/block/{}",
+                accepted.height()
+            );
+            if let Some(target) = block {
+                walk_to(&url, accepted.height(), &header.prev_block_hash, root_height, target);
+            }
         }
         // Same split the page makes: a frame that never parsed as a terminal
         // of this relation is not a proof that failed, and must not be
@@ -243,5 +309,28 @@ fn main() {
                 println!("\n=== VERIFY FAILED after {:?}: {e:?} ===", t.elapsed());
             }
         }
+    }
+}
+
+/// Is `target` in the history just verified? See `src/ancestry.rs`.
+fn walk_to(url: &str, tip: u64, tip_parent: &[u8; 32], root: u64, target: u64) {
+    if target < root {
+        println!("\n=== BLOCK {target} is below the recursion root {root}: proved under the \
+                  previous relation, which these parameters do not cover ===");
+        return;
+    }
+    let t = Instant::now();
+    let headers = headers_between(url, target, tip);
+    match ancestry::walk(tip, tip_parent, target, &headers) {
+        Ok(found) => {
+            println!("\n=== BLOCK {target} IS IN THE VERIFIED CHAIN: {} links checked in {:?} ===",
+                headers.len(), t.elapsed());
+            println!("   block hash  {}", hex::encode(block_id(found)));
+            println!("   state root  {}", hex::encode(found.state_root));
+            println!("   tx root     {}", hex::encode(found.tx_root));
+            println!("   timestamp   {}", found.timestamp);
+            println!("   compare     https://explorer.jetsamchain.com/?network=mainnet#/block/{target}");
+        }
+        Err(e) => println!("\n=== BLOCK {target} NOT SHOWN TO BE IN THIS CHAIN: {e} ==="),
     }
 }

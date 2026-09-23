@@ -31,6 +31,8 @@ use jetsam_recursive::{
 };
 use wasm_bindgen::prelude::*;
 
+mod ancestry;
+
 /// Spin up the rayon worker pool. JS must await this before anything else, or
 /// the matrix scan runs single-threaded (measured 3.1x slower).
 pub use wasm_bindgen_rayon::init_thread_pool;
@@ -129,6 +131,13 @@ fn recursion_root_height(generation: HistoryStepPackGeneration) -> Result<u64, S
 fn decode_header(label: &str, bytes: Option<&[u8]>) -> Result<BlockHeader, JsValue> {
     let bytes = bytes.ok_or_else(|| JsValue::from_str(&format!("{label} was not supplied")))?;
     BlockHeader::from_bytes(bytes).map_err(|e| JsValue::from_str(&format!("{label}: {e:?}")))
+}
+
+/// Lowercase hex, byte order as stored: the encoding the node's RPC uses for
+/// every header field, so a value printed here compares directly with one on
+/// the explorer.
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Quote a Rust debug string so it can sit inside a JSON string literal.
@@ -379,7 +388,7 @@ impl Parameters {
                 "{{\"class\":{},\"m\":{},\"k_log\":{},\"k_skip\":{},\"const_pin\":{},\"digest\":\"{}\"}}",
                 i, shape.m, shape.k_log, shape.k_skip,
                 shape.const_pin.map(|c| c as i64).unwrap_or(-1),
-                entry.matrix_digest().iter().map(|b| format!("{b:02x}")).collect::<String>()
+                to_hex(&entry.matrix_digest())
             ));
         }
         format!("{{\"classes\":[{}]}}", classes.join(","))
@@ -405,7 +414,7 @@ impl Parameters {
             self.parts,
         )
         .map_err(|e| JsValue::from_str(&format!("runtime: {e:?}")))?;
-        Ok(Verifier { runtime })
+        Ok(Verifier { runtime, tip: std::cell::Cell::new(None) })
     }
 }
 
@@ -414,6 +423,79 @@ impl Parameters {
 #[wasm_bindgen]
 pub struct Verifier {
     runtime: HistoryStepRuntime,
+    /// Height and parent link of the tip the last `verify` accepted, and
+    /// nothing after any other outcome.
+    tip: std::cell::Cell<Option<(u64, [u8; 32])>>,
+}
+
+/// The tip a successful [`Verifier::verify`] proved: the only anchor a walk
+/// can start from. It has no constructor, so the page cannot hand the walk a
+/// tip of its own choosing, only the one the replay accepted.
+#[wasm_bindgen]
+pub struct VerifiedTip {
+    height: u64,
+    parent: [u8; 32],
+    root: u64,
+}
+
+#[wasm_bindgen]
+impl VerifiedTip {
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> u64 {
+        self.height
+    }
+
+    /// Where this relation's recursion starts. A walk cannot go below it: the
+    /// blocks there were proved under a relation these parameters do not
+    /// carry.
+    #[wasm_bindgen(getter)]
+    pub fn root_height(&self) -> u64 {
+        self.root
+    }
+
+    /// Is block `target` part of the verified history? `headers` is the raw
+    /// 212-byte headers of blocks `target..height`, ascending, concatenated,
+    /// from any source: nothing about them is trusted. See `src/ancestry.rs`
+    /// for why a walk that reaches the tip's parent settles it.
+    ///
+    /// Returns JSON with `status` `in_chain` and the block's fields, or
+    /// `not_shown` and a reason. A reason is about what the source served,
+    /// never about the proof, which already verified.
+    pub fn walk_to(&self, target: u64, headers: &[u8]) -> String {
+        let not_shown = |reason: String| {
+            format!("{{\"status\":\"not_shown\",\"reason\":\"{}\"}}", json_escape(&reason))
+        };
+        if target < self.root {
+            return not_shown(format!(
+                "block {target} is below block {}, where this relation's proofs begin",
+                self.root
+            ));
+        }
+        let size = jetsam_chain::wire::BLOCK_HEADER_WIRE_SIZE;
+        if headers.len() % size != 0 {
+            return not_shown(format!("{} bytes is not a whole number of headers", headers.len()));
+        }
+        let mut decoded = Vec::with_capacity(headers.len() / size);
+        for (i, bytes) in headers.chunks(size).enumerate() {
+            match BlockHeader::from_bytes(bytes) {
+                Ok(header) => decoded.push(header),
+                Err(e) => return not_shown(format!("header {i} does not decode: {e:?}")),
+            }
+        }
+        match ancestry::walk(self.height, &self.parent, target, &decoded) {
+            Ok(found) => format!(
+                "{{\"status\":\"in_chain\",\"height\":{},\"links\":{},\"hash\":\"{}\",\
+                 \"state_root\":\"{}\",\"tx_root\":\"{}\",\"timestamp\":{}}}",
+                found.height,
+                decoded.len(),
+                to_hex(&block_id(found)),
+                to_hex(&found.state_root),
+                to_hex(&found.tx_root),
+                found.timestamp,
+            ),
+            Err(e) => not_shown(e.to_string()),
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -423,6 +505,15 @@ impl Verifier {
     #[wasm_bindgen(getter)]
     pub fn schedule_json(&self) -> String {
         schedule_json(self.runtime.bank())
+    }
+
+    /// The tip the last [`Verifier::verify`] accepted, if it accepted one.
+    pub fn verified_tip(&self) -> Option<VerifiedTip> {
+        self.tip.get().map(|(height, parent)| VerifiedTip {
+            height,
+            parent,
+            root: self.runtime.bank().recursion_root_height(),
+        })
     }
 
     /// The heights this verifier needs headers for, given a terminal's own
@@ -492,6 +583,9 @@ impl Verifier {
         root_previous_epoch_header: Option<Vec<u8>>,
     ) -> Result<String, JsValue> {
         console_error_panic_hook::set_once();
+        // Whatever this call concludes, an earlier accepted tip no longer
+        // stands for it.
+        self.tip.set(None);
         // Natively the verifier runs on its own rayon lane with a 64 MiB stack.
         // wasm cannot spawn such a pool (rayon::ThreadPoolBuilder::build fails
         // under wasm-bindgen-rayon), so we declare this thread as the budgeted
@@ -578,18 +672,26 @@ impl Verifier {
             previous_epoch.as_ref(),
             root.as_ref(),
         ) {
-            Ok(accepted) => Ok(format!(
-                "{{\"status\":\"verified\",\"height\":{},\"semantic_id\":\"{}\",\"class\":{},\
-                 \"generation\":\"{}\",\"root_height\":{root_height}}}",
-                accepted.height(),
-                accepted
-                    .semantic_id()
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>(),
-                accepted.class_id().index(),
-                generation_name(generation),
-            )),
+            // `state_root` and `parent` are the two fields of this header that
+            // a block explorer also shows and that the proof pins: the state
+            // root is an accumulator lane compared directly, the parent is
+            // absorbed into the semantic projection. The block hash is left
+            // out on purpose. It covers the mining nonce, which that
+            // projection skips, so nothing here vouches for it.
+            Ok(accepted) => {
+                self.tip.set(Some((accepted.height(), header.prev_block_hash)));
+                Ok(format!(
+                    "{{\"status\":\"verified\",\"height\":{},\"semantic_id\":\"{}\",\"class\":{},\
+                     \"generation\":\"{}\",\"root_height\":{root_height},\
+                     \"state_root\":\"{}\",\"parent\":\"{}\"}}",
+                    accepted.height(),
+                    to_hex(&accepted.semantic_id()),
+                    accepted.class_id().index(),
+                    generation_name(generation),
+                    to_hex(&header.state_root),
+                    to_hex(&header.prev_block_hash),
+                ))
+            }
             Err(error) => {
                 // `certain` is false here on purpose. A frame that will not
                 // parse is what an upgraded chain looks like, and also what a

@@ -132,6 +132,15 @@ is the acceptance test. It is the native twin of the page (same relation, same
 headers, same checks) and it verifies against a live node, so a pack that is
 merely well-formed but wrong cannot pass it.
 
+    THEN="again walk tamper" web/browser-test.sh live    # or: local
+
+is the same test for the page itself: headless Chrome, driven over the
+DevTools protocol, reporting the verdict, the time taken and Chrome's peak
+memory, and saving a screenshot of each result. `THEN` runs more in the same
+page load, each of which must pass: verify again, walk to a block 300 below
+the tip, and reject a tampered proof. A new profile is a first visit and takes
+about half an hour; passing that profile again tests the cached path.
+
 ## Serving it
 
 `deploy.sh` publishes to `/var/www/jtmverify`. The vhost must set:
@@ -160,6 +169,16 @@ a node's RPC surface includes `jetsam_walletSend` and `jetsam_walletConsolidate`
 Batch requests are refused outright, since an array could otherwise smuggle a
 denied method past a naive single-method check.
 
+One more method is assembled in the gateway rather than forwarded:
+`jetsam_getHeadersByHeightRange(start, count)`, for the walk described below.
+A node has no range method, and one request per header would run a visitor
+into the rate limit long before a day of blocks. It is built only from the
+node's own `jetsam_getHeaderByHeight`, so the node's surface is unchanged, and
+it is capped at 250 headers a request, 2,000 a minute per visitor and eight
+upstream calls in flight, so that one request cannot become a burst against
+the node. A gateway without it still works; the page then walks at most 100
+blocks, one header at a time.
+
 It answers cross-origin callers, so the page can be pointed at someone else's
 copy of it. `ALLOW_ORIGIN` pins that to one page; the default is open, since
 every method it allows is read-only and already public. It sets no
@@ -181,7 +200,48 @@ will ever talk to a node directly, whoever runs it. The page says so, and a
 custom endpoint is probed with one request before the ninety-second digest
 starts, so a typo costs a second rather than a minute and a half.
 
+## Checking the answer somewhere else
+
+A verified result shows two values that can be looked up elsewhere: the
+block's **state root** and its **parent** hash. The proof fixes both. The state
+root is one of the accumulator lanes checked directly against the header, and
+the parent is absorbed into the header's semantic projection, which is what the
+proof binds. The page links to that block on the
+[Jetsam explorer](https://explorer.jetsamchain.com), which reads the project's
+own public node, so the comparison is against a source the page did not use.
+`verify_terminal` prints the same two values and the same link.
+
+It does not show the block hash, although the explorer lists it first. That
+hash covers the mining nonce, the semantic projection skips the nonce, and so
+nothing the page checked vouches for it.
+
+At block 18364 both values matched `rpc.jetsamchain.com` byte for byte, in the
+node's own encoding: lowercase hex in stored byte order.
+
+### Is a given block in the verified chain?
+
+A node serves only its current proof, so an older block cannot be checked by
+fetching an older proof. It does not need one. After a verification the page
+takes a height and walks down from the verified tip, fetching each header and
+checking that it hashes to the parent link of the one above. That settles it,
+because every one of those links is fixed by the proof already checked. The
+tip's own parent link is part of the header the proof binds, and every older
+link, the parent's hash with its nonce included, is sealed inside the circuit
+by each step's replay of its parent header (`ParentSealTrace` upstream). A
+header that does not belong breaks the walk at that height.
+
+So for a walked block the page shows its hash as well, and this one is fixed:
+it is the parent link of the block above it. The walk reaches back about a day
+(1,000 blocks), and never below block 17749, where this relation's proofs
+begin. `src/ancestry.rs` is the check, shared with `verify_terminal --block`.
+Walked to block 18107, 300 links, the hash, state root and tx root matched
+`rpc.jetsamchain.com` exactly.
+
 ## Trust, stated precisely
+
+A proof source can put nothing on the page as markup. Every string it can
+influence, an error message included, is escaped before it is shown, since a
+source that could inject markup could paint a verdict of its own.
 
 Two levels, and the page labels which one produced a result:
 

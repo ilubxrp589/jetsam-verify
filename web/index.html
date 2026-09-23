@@ -3,6 +3,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Jetsam · local chain-state verifier</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2316140f'/%3E%3Ctext x='16' y='25' font-family='Georgia,Times New Roman,serif' font-size='25' fill='%23efe8d8' text-anchor='middle'%3EJ%3C/text%3E%3C/svg%3E">
 <style>
 :root{
   --paper:#efe8d8; --rule:#2c281f; --ink:#16140f;
@@ -115,6 +116,21 @@ details.env summary::-webkit-details-marker{display:none}
 .scope{font-size:13px;line-height:1.6;color:var(--ink-2);max-width:60ch;
   margin:16px 0 0;padding-left:14px;border-left:2px solid var(--rule)}
 
+.walk{margin-top:26px;border-top:1px solid var(--ink-3);padding-top:16px;max-width:760px}
+.walk .row{display:flex;gap:10px;align-items:stretch;margin-top:9px;flex-wrap:wrap}
+.walk input{font-family:var(--mono);font-size:13px;padding:8px 9px;width:12ch;
+  background:var(--paper);border:1px solid var(--rule);color:var(--ink)}
+.walk .act.ghost{margin-left:0;padding:8px 18px;font-size:14px}
+.walk .hint{font-size:12px;color:var(--ink-2);line-height:1.55;margin-top:8px;max-width:64ch}
+/* A walk's answer. Lighter than the stamp: it is about one block, and it
+   rests on the verdict above rather than standing beside it. */
+.walkres{margin-top:14px;padding:15px 17px;font-size:13px;line-height:1.6}
+.walkres.ok{border:2px solid var(--pass);background:#fff}
+.walkres.no{border:2px solid var(--rule);background:var(--caution)}
+.walkres dl{display:grid;grid-template-columns:130px 1fr;gap:6px 18px;margin:12px 0}
+.walkres dt{color:var(--ink-2)}
+.walkres dd{margin:0;font-family:var(--mono);word-break:break-all}
+
 .stale{border:3px solid var(--rule);background:var(--caution);padding:22px 24px}
 .stale h2{font-family:var(--serif);font-size:26px;margin:0 0 8px;font-weight:400}
 .stale p{margin:0 0 14px;font-size:14px;line-height:1.6;max-width:56ch}
@@ -194,13 +210,12 @@ body.no-verify .mobile{display:block}
   .stamp{padding:20px 18px}
   .stamp dl{grid-template-columns:1fr;gap:2px 0}
   .stamp dt{margin-top:8px}
+  .walkres dl{grid-template-columns:1fr;gap:2px 0}
   .takeover{padding:26px 22px}
 }
 </style>
 
 <div class="sheet">
-
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2316140f'/%3E%3Ctext x='16' y='25' font-family='Georgia,Times New Roman,serif' font-size='25' fill='%23efe8d8' text-anchor='middle'%3EJ%3C/text%3E%3C/svg%3E">
 
   <div class="mast">
     <h1>Jetsam <span style="color:var(--ink-3)">·</span> local chain-state verifier</h1>
@@ -313,6 +328,11 @@ body.no-verify .mobile{display:block}
 
 <script type="module">
 const $ = (id) => document.getElementById(id);
+// Anything a proof source can influence reaches innerHTML only through this.
+// A visitor may point the page at any gateway, and one that could inject
+// markup through an error message could paint a verdict of its own.
+const esc = (v) => String(v).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const DIAG = new URLSearchParams(location.search).get("diag") === "1";
 const T0 = performance.now();
 const logEl = $("log");
@@ -567,6 +587,14 @@ function endPhase(id, text) {
 
 /* ── worker ── */
 const worker = new Worker("verify-worker.js", { type: "module" });
+// A walk's progress or answer, under the form. The button comes back when the
+// walk is over, whatever it concluded.
+function walkOut(html, busy = false) {
+  const out = $("walkout"), go = $("walkgo");
+  if (out) out.innerHTML = html;
+  if (go) go.disabled = busy;
+}
+
 function wire() {
   const go = $("go"), fresh = $("fresh");
   if (go) go.onclick = () => {
@@ -583,6 +611,16 @@ function wire() {
     jobRunning = true; $("pulse").hidden = false; startLoad(); clockStart();
     worker.postMessage({ type: "run", tamper: true, rpcUrl });
   };
+  const wg = $("walkgo"), wh = $("walkh");
+  if (wg && wh) {
+    const walk = () => {
+      if (wg.disabled) return;
+      wg.disabled = true;
+      worker.postMessage({ type: "walk", height: Number(wh.value || wh.placeholder) });
+    };
+    wg.onclick = walk;
+    wh.onkeydown = (e) => { if (e.key === "Enter") walk(); };
+  }
   if (fresh) fresh.onclick = () => {
     indexedDB.deleteDatabase("jetsam-verify");
     log("cleared stored parameters, next run re-derives everything");
@@ -698,6 +736,11 @@ worker.onmessage = ({ data: m }) => {
       label.textContent = "Result";
       jobRunning = false; $("pulse").hidden = true; $("plate").classList.remove("working");
       stopLoad(); clockStop();
+      // The two header fields the proof pins that the explorer also shows. A
+      // worker from before they existed sends neither, and printing nothing
+      // beats printing "undefined" beside a verdict.
+      const pinned = Boolean(m.state_root && m.parent);
+      const explorer = `https://explorer.jetsamchain.com/?network=mainnet#/block/${m.height}`;
       paint(`
         <div class="stamp stamp-in">
           <h2>Chain verified</h2>
@@ -705,6 +748,8 @@ worker.onmessage = ({ data: m }) => {
                                    : "path · cached parameters from this browser"}</div>
           <dl>
             <dt>Block height</dt><dd>${m.height}</dd>
+            ${pinned ? `<dt>State root</dt><dd>${m.state_root}</dd>
+            <dt>Parent block</dt><dd>${m.parent}</dd>` : ""}
             <dt>Semantic ID</dt><dd>${m.semantic_id}</dd>
             <dt>Proof class</dt><dd>${m.class}</dd>
             <dt>Replay time</dt><dd>${clk(m.seconds)}</dd>
@@ -716,9 +761,28 @@ worker.onmessage = ({ data: m }) => {
           rebuilt here from that block's own headers, so a valid proof of a different branch
           is rejected. The history before ${m.root_height + 1} was proved under the previous
           relation, whose parameters this page does not carry.</p>` : ""}
+        ${pinned ? `<p class="scope">To check this against a source this page did not use, open
+          <a href="${explorer}" target="_blank" rel="noopener" style="color:var(--blue)">block
+          ${m.height} on the Jetsam explorer</a>, which reads the project's own public node. Its
+          State root and Parent should match the two above, and the proof fixes both. The block hash
+          it lists first is not fixed by the proof: that hash covers the mining nonce, and the proof
+          does not.</p>` : ""}
         <button class="act" id="go" style="margin-top:20px">Verify again</button>
         <button class="act ghost" id="fresh">Re-derive from scratch</button>
-        <button class="act ghost" id="tamper">Reject a tampered proof</button>`);
+        <button class="act ghost" id="tamper">Reject a tampered proof</button>
+        ${m.walk_from != null && m.walk_from < m.height ? `<div class="walk">
+          <div class="sc">Is a block in this chain?</div>
+          <div class="row">
+            <input id="walkh" type="number" inputmode="numeric" min="${m.walk_from}"
+              max="${m.height - 1}" placeholder="${m.height - 1}" aria-label="block height">
+            <button class="act ghost" id="walkgo">Check</button>
+          </div>
+          <div class="hint">Any block from ${m.walk_from} to ${m.height - 1}. The page fetches the
+            headers above it and checks that each one hashes to the parent link of the next, up to
+            the block verified here. The proof covers every one of those links, so a block that
+            connects is part of the history it verified.</div>
+          <div id="walkout"></div>
+        </div>` : ""}`);
       wire();
       log(`VERIFIED height ${m.height} in ${clk(m.seconds)}`);
       break;
@@ -742,7 +806,7 @@ worker.onmessage = ({ data: m }) => {
                : `A protocol upgrade this page has not been re-pointed at is the usual cause, and a
                   server returning something other than a proof looks identical from here. Either
                   way, this is not evidence that the chain produced a bad proof.`}</p>
-          <div class="det">${m.reason} · this page carries the ${m.generation} parameters
+          <div class="det">${esc(m.reason)} · this page carries the ${esc(m.generation)} parameters
             pinned at ${m.pin.slice(0,16)}…</div>
         </div>
         <button class="act" id="go" style="margin-top:20px">Try again</button>`);
@@ -750,6 +814,37 @@ worker.onmessage = ({ data: m }) => {
       log(`${m.certain ? "OUT OF DATE" : "UNREADABLE"}: ${m.reason}`);
       break;
     }
+    case "walking":
+      walkOut(`<div class="walkres">Checking ${m.links} parent links, from block ${m.tip}
+        down to ${m.target}…</div>`, true);
+      log(`walking ${m.links} parent links from block ${m.tip} down to ${m.target}`);
+      break;
+    case "walked": {
+      if (m.status === "in_chain") {
+        const when = new Date(m.timestamp * 1000).toISOString().replace("T", " ").slice(0, 19);
+        walkOut(`<div class="walkres ok"><b>Block ${m.height} is in the verified chain.</b>
+          ${m.links} parent links checked, from block ${m.tip} down, in ${Math.round(m.ms)} ms.
+          <dl><dt>Block hash</dt><dd>${esc(m.hash)}</dd><dt>State root</dt><dd>${esc(m.state_root)}</dd>
+              <dt>Tx root</dt><dd>${esc(m.tx_root)}</dd><dt>Time</dt><dd>${when} UTC</dd></dl>
+          Unlike the tip's, this block's hash is fixed too: it is the parent link of the block
+          above it, and the proof covers that link.
+          <a href="https://explorer.jetsamchain.com/?network=mainnet#/block/${m.height}"
+            target="_blank" rel="noopener" style="color:var(--blue)">Compare block ${m.height} on the
+            Jetsam explorer</a>.</div>`);
+        log(`IN CHAIN: block ${m.height}, ${m.links} parent links checked`);
+      } else {
+        walkOut(`<div class="walkres no"><b>Block ${m.target} is not shown to be in this chain.</b>
+          ${esc(m.reason)}. The verification above still stands: this is about the headers the
+          source returned for the walk, not about the proof.</div>`);
+        log(`NOT SHOWN: block ${m.target}: ${m.reason}`);
+      }
+      break;
+    }
+    case "walk-failed":
+      walkOut(`<div class="walkres no"><b>Could not check block ${esc(m.target)}.</b>
+        ${esc(m.message)}</div>`);
+      log(`WALK FAILED: block ${m.target}: ${m.message}`);
+      break;
     case "failed": {
       for (const k in timers) clearInterval(timers[k]);
       jobRunning = false; $("pulse").hidden = true; $("plate").classList.remove("working");
@@ -762,12 +857,12 @@ worker.onmessage = ({ data: m }) => {
         ? `<h2>TAMPERED PROOF REJECTED</h2>
            <p>One bit of the proof was altered on purpose before verification, and the check caught
               it. The chain is fine. This is what a bad proof looks like.</p>
-           <div class="why">deliberate test · ${m.message}</div>`
+           <div class="why">deliberate test · ${esc(m.message)}</div>`
         : `<h2>VERIFICATION FAILED</h2>
            <p>This proof did not check out on this machine. Do not rely on any chain data behind it.
               A proof built for a different protocol version is reported separately, as out of date,
               so that is not what this is.</p>
-           <div class="why">${m.message}</div>`;
+           <div class="why">${esc(m.message)}</div>`;
       $("stage").appendChild(t);
       log(`FAILED: ${m.message}`);
       break;

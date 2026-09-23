@@ -24,13 +24,61 @@ const ALLOWED = new Set([
   "jetsam_getEpochAnchor",
 ]);
 
+// One method is assembled here rather than forwarded. The page's "is this
+// block in the chain" walk needs every header from a block up to the verified
+// tip, a node has no range method, and one request per header would run a
+// visitor into the limit above long before a day of blocks. It is built only
+// from the node's own read-only jetsam_getHeaderByHeight, so the node's
+// surface is unchanged; the caps keep one request from becoming a burst of
+// hundreds against it.
+const RANGE_METHOD   = "jetsam_getHeadersByHeightRange";
+const RANGE_MAX      = 250;           // headers per request
+const RANGE_BUDGET   = 2_000;         // headers per window per IP
+const RANGE_PARALLEL = 8;             // upstream calls in flight per request
+
 const buckets = new Map();
 function rateLimited(ip) {
   const now = Date.now();
   const b = buckets.get(ip);
-  if (!b || now - b.start > RATE_MS) { buckets.set(ip, { start: now, n: 1 }); return false; }
+  if (!b || now - b.start > RATE_MS) { buckets.set(ip, { start: now, n: 1, headers: 0 }); return false; }
   b.n += 1;
   return b.n > RATE_MAX;
+}
+function overHeaderBudget(ip, count) {
+  const b = buckets.get(ip);
+  b.headers += count;
+  return b.headers > RANGE_BUDGET;
+}
+
+async function upstreamCall(method, params) {
+  const r = await fetch(UPSTREAM, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message);
+  return j.result;
+}
+
+class PastTip extends Error {}
+
+// Headers start..start+count, ascending, or an error naming the first height
+// the node does not have (a range past the tip).
+async function headerRange(start, count) {
+  const out = new Array(count);
+  let next = 0;
+  const lane = async () => {
+    while (next < count) {
+      const i = next++;
+      out[i] = await upstreamCall("jetsam_getHeaderByHeight", [start + i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(RANGE_PARALLEL, count) }, lane));
+  const missing = out.findIndex((h) => typeof h !== "string");
+  if (missing >= 0) throw new PastTip(`no header at height ${start + missing}`);
+  return out;
 }
 setInterval(() => {
   const now = Date.now();
@@ -103,6 +151,26 @@ createServer((req, res) => {
     // naive single-method check.
     if (Array.isArray(rpc)) { deny(res, -32600, "batch requests are not accepted"); return; }
     if (!rpc || typeof rpc.method !== "string") { deny(res, -32600, "invalid request"); return; }
+    if (rpc.method === RANGE_METHOD) {
+      const [start, count] = Array.isArray(rpc.params) ? rpc.params : [];
+      if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(count)
+          || count < 1 || count > RANGE_MAX) {
+        deny(res, -32602, `params are [start, count] with 1 <= count <= ${RANGE_MAX}`, rpc.id ?? null);
+        return;
+      }
+      if (overHeaderBudget(ip, count)) { deny(res, -32029, "header budget exceeded", rpc.id ?? null); return; }
+      try {
+        const result = await headerRange(start, count);
+        cors(res);
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id ?? 1, result }));
+      } catch (e) {
+        if (e instanceof PastTip) { deny(res, -32602, e.message, rpc.id ?? null); return; }
+        console.log(`[upstream error] ${RANGE_METHOD}: ${e.message}`);
+        deny(res, -32603, "upstream unavailable", rpc.id ?? null);
+      }
+      return;
+    }
     if (!ALLOWED.has(rpc.method)) {
       console.log(`[deny] ${ip} ${rpc.method}`);
       deny(res, -32601, "method not available through this gateway", rpc.id ?? null);
@@ -137,4 +205,5 @@ createServer((req, res) => {
     }
   });
 }).listen(PORT, "127.0.0.1", () =>
-  console.log(`jtm read-only rpc gateway on 127.0.0.1:${PORT} -> ${UPSTREAM} (${ALLOWED.size} methods allowed)`));
+  console.log(`jtm read-only rpc gateway on 127.0.0.1:${PORT} -> ${UPSTREAM} ` +
+              `(${ALLOWED.size} methods allowed, plus ${RANGE_METHOD})`));

@@ -53,9 +53,62 @@ async function rpc(method, params = []) {
       : `${rpcUrl} returned HTTP ${r.status}`);
   }
   const j = await r.json();
-  if (j.error) throw new Error(`${method}: ${j.error.message}`);
+  if (j.error) {
+    const err = new Error(`${method}: ${j.error.message}`);
+    err.code = j.error.code;
+    throw err;
+  }
   return j.result;
 }
+
+// "Is block h in this chain" walks parent links from the verified tip down to
+// h, one header per block, so it is capped: about a day of blocks.
+const MAX_WALK = 1000;
+// Headers per range request; rpc-proxy.mjs refuses more.
+const RANGE_MAX = 250;
+// A source without the range method is asked one header at a time, and that
+// only makes sense for a short walk.
+const MAX_WALK_SINGLE = 100;
+
+// The raw headers of blocks from..to (exclusive), concatenated, ascending.
+// Nothing here is trusted: VerifiedTip.walk_to hashes every one of them.
+async function headersBetween(from, to) {
+  const hexes = [];
+  for (let start = from; start < to; start += RANGE_MAX) {
+    const count = Math.min(RANGE_MAX, to - start);
+    let batch, rest = false;
+    try {
+      batch = await rpc("jetsam_getHeadersByHeightRange", [start, count]);
+    } catch (err) {
+      if (err.code !== -32601) throw err;
+      if (to - from > MAX_WALK_SINGLE)
+        throw new Error(`this source has no header ranges, so it can only walk ${MAX_WALK_SINGLE} ` +
+                        `blocks below the tip`);
+      batch = [];
+      for (let h = start; h < to; h++) batch.push(await rpc("jetsam_getHeaderByHeight", [h]));
+      rest = true;
+    }
+    const want = rest ? to - start : count;
+    if (!Array.isArray(batch) || batch.length !== want)
+      throw new Error(`the source returned ${Array.isArray(batch) ? batch.length : "no"} of ` +
+                      `${want} headers from block ${start}`);
+    hexes.push(...batch);
+    if (rest) break;
+  }
+  const out = new Uint8Array(hexes.length * 212);
+  hexes.forEach((h, i) => {
+    if (typeof h !== "string" || h.length !== 424)
+      throw new Error(`the header for block ${from + i} is not 212 bytes`);
+    out.set(hex(h), i * 212);
+  });
+  return out;
+}
+
+// The tip the last verification accepted: the only place a walk can start.
+let verifiedTip = null;
+// The lowest block a walk may reach: the cap below the tip, and never under
+// the recursion root, whose earlier blocks another relation proved.
+const walkFrom = (tip) => Math.max(Number(tip.root_height), Number(tip.height) - MAX_WALK);
 
 let dbPromise = null;
 const openDb = () => (dbPromise ??= new Promise((res, rej) => {
@@ -109,7 +162,29 @@ self.onmessage = async (e) => {
            cores: navigator.hardwareConcurrency || 0, pin: PIN, release: RELEASE });
     return;
   }
+  if (cmd === "walk") {
+    const target = Number(e.data?.height);
+    try {
+      if (!verifiedTip)
+        throw new Error("verify the chain first: a walk starts from the block the proof accepted");
+      const tip = Number(verifiedTip.height);
+      const lowest = walkFrom(verifiedTip);
+      if (!Number.isSafeInteger(target) || target < lowest || target >= tip)
+        throw new Error(`choose a block from ${lowest} to ${tip - 1}`);
+      send({ type: "walking", target, tip, links: tip - target });
+      const t = performance.now();
+      const bytes = await headersBetween(target, tip);
+      const out = JSON.parse(verifiedTip.walk_to(BigInt(target), bytes));
+      send({ type: "walked", ...out, target, tip, ms: performance.now() - t });
+    } catch (err) {
+      send({ type: "walk-failed", target, message: String(err && err.message ? err.message : err) });
+    }
+    return;
+  }
   if (cmd !== "run") return;
+  // A new run supersedes whatever the last one accepted.
+  verifiedTip?.free();
+  verifiedTip = null;
   const tamper = e.data?.tamper === true;
   // Only http(s) absolute urls, or the same-origin default. Nothing here is
   // trusted, but the page should not be talked into a javascript: or data: url.
@@ -140,6 +215,12 @@ self.onmessage = async (e) => {
   }
 
   let trust = "full";
+  // Freed explicitly when the run ends. It holds both matrices, close to a
+  // gigabyte of wasm memory, and the FinalizationRegistry the bindings rely on
+  // runs only after a JS garbage collection, which that memory never prompts.
+  // Left to it, each "Verify again" stacked another copy under the 4 GB cap: a
+  // second run measured an 84 s cache restore instead of 3 s.
+  let verifier = null;
   try {
     send({ type: "stage", stage: "engine" });
     const threads = await startEngine();
@@ -178,7 +259,7 @@ self.onmessage = async (e) => {
       }
     }
 
-    const verifier = params.into_verifier(matrices);
+    verifier = params.into_verifier(matrices);
 
     // 3. Live chain state, straight off the RPC. Untrusted by construction:
     //    a wrong byte anywhere makes the replay below reject.
@@ -238,7 +319,9 @@ self.onmessage = async (e) => {
     // Default deny. Only the exact word "verified" is a pass; a status this
     // page does not recognise is a failure, never a success.
     if (out.status === "verified") {
-      send({ type: "verified", ...out, seconds, trust, tamper, tamperAt });
+      verifiedTip = verifier.verified_tip() ?? null;
+      send({ type: "verified", ...out, seconds, trust, tamper, tamperAt,
+             walk_from: verifiedTip ? walkFrom(verifiedTip) : null });
     } else if (out.status === "stale") {
       send({ type: "stale", reason: out.reason, generation: out.generation,
              certain: out.certain === true, pin: PIN });
@@ -248,5 +331,7 @@ self.onmessage = async (e) => {
     }
   } catch (err) {
     send({ type: "failed", message: String(err && err.message ? err.message : err), tamper });
+  } finally {
+    verifier?.free();
   }
 };
